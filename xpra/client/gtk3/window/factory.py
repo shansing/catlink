@@ -7,7 +7,6 @@
 from xpra.os_util import WIN32, OSX
 from xpra.util.env import envbool
 
-
 def get_window_base_classes() -> tuple[type, ...]:
     from xpra.client.gtk3.window.base import GTKClientWindowBase
     from xpra.client.gui.window.action import ActionWindow
@@ -38,6 +37,8 @@ def get_window_base_classes() -> tuple[type, ...]:
     if features.keyboard:
         from xpra.client.gtk3.window.keyboard import KeyboardWindow
         WINDOW_BASES.append(KeyboardWindow)
+        from xpra.client.gtk3.window.im_window_ext import IMEnhancedWindow
+        WINDOW_BASES.append(IMEnhancedWindow)
     if features.pointer:
         from xpra.client.gtk3.window.pointer import PointerWindow
         WINDOW_BASES.append(PointerWindow)

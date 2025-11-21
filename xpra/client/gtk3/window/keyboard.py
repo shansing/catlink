@@ -80,11 +80,16 @@ class KeyboardWindow(GtkStubWindow):
         return key_event
 
     def handle_key_press_event(self, _window, event) -> bool:
+        if self._handle_im_events(_window, event):
+            return True
+
         key_event = self.parse_key_event(event, True)
         self._client.handle_key_action(self, key_event)
         return True
 
     def handle_key_release_event(self, _window, event) -> bool:
+        if self._handle_im_events(_window, event):
+            return True
         key_event = self.parse_key_event(event, False)
         self._client.handle_key_action(self, key_event)
         return True
