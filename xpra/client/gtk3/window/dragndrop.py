@@ -151,7 +151,19 @@ class DragNDropWindow(GtkStubWindow):
                 file_done_cb(filename)
                 openit = self._file_handler.remote_open_files
                 log.info("sending file %s (%i bytes)", basename, filesize)
-                self._file_handler.send_file(filename, "", data, filesize=filesize, openit=openit)
+
+                RIM_SERVER=os.getenv("RIM_SERVER","")
+                if RIM_SERVER != "":
+                    import requests
+                    x = requests.get(
+                        url =f"{RIM_SERVER}/dnd/drop",
+                        params = {
+                            "file_path": filename,
+                            "client_id": os.getenv("LZC_CLIENT_ID"),
+                        })
+                    log.info(f"DROP RESULT {x}")
+                else:
+                    self._file_handler.send_file(filename, "", data, filesize=filesize, openit=openit)
 
             cancellable = None
             user_data = (filename, True)
