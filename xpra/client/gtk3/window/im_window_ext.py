@@ -20,7 +20,6 @@ RIM_SERVER=os.getenv("RIM_SERVER")
 class IMEnhancedWindow(GtkStubWindow):
     """无冲突方案：复用KeyboardWindow回调，不新增信号绑定"""
     def init_window(self, client, metadata: typedict, client_props: typedict) -> None:
-        log.info("===== IM基础类初始化（复用KeyboardWindow回调） =====")
         self._client = client
         self._window = client
         self._first_key_captured = False
@@ -68,7 +67,7 @@ class IMEnhancedWindow(GtkStubWindow):
         if not self.im_setup:
             self.im_context.set_client_window(_win.get_window())
             self.im_setup = True
-            xid = self._metadata.get("id")
+            xid = self._metadata.get("xid")
             subscribe_spots(url = f"{RIM_SERVER}/im/cursor_events?xid={xid}", callback= _update_spot_location)
 
         if self.im_context.filter_keypress(event):
@@ -76,16 +75,16 @@ class IMEnhancedWindow(GtkStubWindow):
         return False
 
     def _on_im_preedit_start(self, im_context):
-        log.info(f"predit start, win:{self._metadata.get('id')}")
+        #log.info(f"predit start, win:{self._metadata.get('id')}")
         pass
 
     def _on_im_preedit_end(self, im_context):
-        log.info(f"predit end, win:{self._metadata.get('id')}")
+        #log.info(f"predit end, win:{self._metadata.get('id')}")
         pass
 
     def _on_im_preedit_changed(self, im_context):
         tstr = im_context.get_preedit_string()
-        log.info(f"predit change to: {tstr}")
+        #log.info(f"predit change to: {tstr}")
 
 
     def _on_im_commit(self, im_context, text):
