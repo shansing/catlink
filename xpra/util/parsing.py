@@ -8,6 +8,7 @@ import re
 import binascii
 from typing import Any
 from collections.abc import Sequence, Callable
+from xpra.os_util import gi_import
 
 from xpra.util.env import envfloat
 from xpra.log import Logger
@@ -49,6 +50,16 @@ def parse_scaling(desktop_scaling: str, root_w: int, root_h: int,
     log("parse_scaling(%s)", (desktop_scaling, root_w, root_h, min_scaling, max_scaling))
     if desktop_scaling in TRUE_OPTIONS or desktop_scaling in FALSE_OPTIONS:
         return 1, 1
+    if desktop_scaling == "os":
+        Gdk = gi_import("Gdk")
+        display = Gdk.Display.get_default()
+        if display:
+            monitor = display.get_monitor(0)
+            system_scale = 1 / monitor.get_scale_factor()
+            log(f"GET OS SCALE FATOR {system_scale}")
+            return system_scale, system_scale
+        else:
+            log.error("can't query system monitor scale factor")
     if desktop_scaling.startswith("auto"):
         # figure out if the command line includes settings to use for auto mode:
         # here are our defaults:
