@@ -50,19 +50,24 @@ class IMEnhancedWindow(GtkStubWindow):
             if error:
                 print(f"❌ 错误：{str(error)}")
             else:
-                """GtkEntry 同款光标位置通知：即使不绘制，也要告诉输入法"""
                 if not self.has_focus or not self.get_window():
                     return
 
+                if x == 0 and y == 0:
+                    self.im_context.focus_out()
+                    return
+
+                geo = self.get_window().get_geometry()
+                _x = x * self._xscale  - geo.x
+                _y = y * self._yscale -  geo.y
                 # 构造默认光标矩形（输入法只需要存在，不需要精准位置）
                 cursor_rect = Gdk.Rectangle()
-                cursor_rect.x = x
-                cursor_rect.y = y
+                cursor_rect.x = _x
+                cursor_rect.y = _y
                 cursor_rect.width = 1
                 cursor_rect.height = 20
+                #print(f"更新坐标: x:{x} y:{y}  --(s:{self._xscale})--> x:{_x} y:{_y}")
                 self.im_context.set_cursor_location(cursor_rect)
-
-                #print(f"✅ 坐标更新：x={x}, y={y}")
 
         if not self.im_setup:
             self.im_context.set_client_window(_win.get_window())
