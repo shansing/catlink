@@ -83,9 +83,14 @@ class FocusWindow(GtkStubWindow):
             log("focus-in-event for wid=%#x", self.wid)
             self.do_x11_focus_in_event(event)
 
+            self.im_context.focus_in()
+            self.im_context.reset()
+
         def focus_out(_window, event) -> None:
             log("focus-out-event for wid=%#x", self.wid)
             self.do_x11_focus_out_event(event)
+
+            self.im_context.focus_out()
 
         self.connect("focus-in-event", focus_in)
         self.connect("focus-out-event", focus_out)

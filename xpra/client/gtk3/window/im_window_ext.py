@@ -43,9 +43,6 @@ class IMEnhancedWindow(GtkStubWindow):
         pass
 
     def _handle_im_events(self, _win, event) -> bool:
-        # return False
-        self.im_context.focus_in()
-
         def _update_spot_location(x: Optional[int], y: Optional[int], error: Optional[Exception]) -> None:
             if error:
                 print(f"❌ 错误：{str(error)}")
@@ -54,7 +51,6 @@ class IMEnhancedWindow(GtkStubWindow):
                     return
 
                 if x == 0 and y == 0:
-                    self.im_context.focus_out()
                     return
 
                 geo = self.get_window().get_geometry()
@@ -73,6 +69,7 @@ class IMEnhancedWindow(GtkStubWindow):
             self.im_context.set_client_window(_win.get_window())
             self.im_setup = True
             xid = self._metadata.get("xid")
+            # TODO: 这里只需要订阅一个全局坐标变化即可，不需要每个窗口都单独订阅一份
             subscribe_spots(url = f"{RIM_SERVER}/im/cursor_events?xid={xid}", callback= _update_spot_location)
 
         if self.im_context.filter_keypress(event):
@@ -130,8 +127,6 @@ def subscribe_spots(url: str, callback: Callable[[Optional[int], Optional[int], 
 
     def _background_task() -> None:
         """后台线程执行的核心逻辑"""
-        print(f"[后台线程] 开始订阅坐标，连接地址：{url}")
-        print("[后台线程] 按 Ctrl+C 或调用线程 stop() 退出\n")
 
         running = True
         while running:
@@ -144,7 +139,6 @@ def subscribe_spots(url: str, callback: Callable[[Optional[int], Optional[int], 
                     headers={"Connection": "keep-alive"},
                 )
                 response.raise_for_status()
-                print("[后台线程] ✅ 连接成功，持续接收坐标更新...")
 
                 # 逐行读取（阻塞等待数据，直到连接断开）
                 for line_bytes in response.iter_lines(chunk_size=1024, decode_unicode=False):
