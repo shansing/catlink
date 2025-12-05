@@ -21,8 +21,6 @@ class IMEnhancedWindow(GtkStubWindow):
     """无冲突方案：复用KeyboardWindow回调，不新增信号绑定"""
     def init_window(self, client, metadata: typedict, client_props: typedict) -> None:
         self._client = client
-        self._window = client
-        self._first_key_captured = False
         self.im_context = Gtk.IMMulticontext()
         # 3. 绑定输入法完整信号集（本地程序默认绑定，缺一不可）
         self.im_context.connect("commit", self._on_im_commit)
@@ -32,6 +30,7 @@ class IMEnhancedWindow(GtkStubWindow):
         self.im_context.connect("retrieve-surrounding", self._on_im_retrieve_surrounding)
         self.im_context.connect("delete-surrounding", self._on_im_delete_surrounding)
         self.im_setup = False
+        self.when_realized("init-focus", self._setup_im)
 
     def _on_im_retrieve_surrounding(self, im_context):
         #log.info(f"on im retrieve surrounding")
@@ -42,7 +41,7 @@ class IMEnhancedWindow(GtkStubWindow):
         # TODO: set surronding
         pass
 
-    def _handle_im_events(self, _win, event) -> bool:
+    def _setup_im(self):
         def _update_spot_location(x: Optional[int], y: Optional[int], error: Optional[Exception]) -> None:
             if error:
                 print(f"❌ 错误：{str(error)}")
@@ -66,15 +65,16 @@ class IMEnhancedWindow(GtkStubWindow):
                 self.im_context.set_cursor_location(cursor_rect)
 
         if not self.im_setup:
-            self.im_context.set_client_window(_win.get_window())
+            self.im_context.set_client_window(self.get_window())
+            self.im_context.focus_in()
+            self.im_context.reset()
             self.im_setup = True
             xid = self._metadata.get("xid")
             # TODO: 这里只需要订阅一个全局坐标变化即可，不需要每个窗口都单独订阅一份
             subscribe_spots(url = f"{RIM_SERVER}/im/cursor_events?xid={xid}", callback= _update_spot_location)
 
-        if self.im_context.filter_keypress(event):
-            return True
-        return False
+    def _handle_im_events(self, _win, event) -> bool:
+        return self.im_context.filter_keypress(event)
 
     def _on_im_preedit_start(self, im_context):
         #log.info(f"predit start, win:{self._metadata.get('id')}")
