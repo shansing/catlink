@@ -5,6 +5,8 @@
 
 
 def get_backend_module() -> str:
+    return "xpra.gtk.clipboard.GTK_Clipboard"
+
     from xpra.platform.posix.gui import x11_bindings
     if x11_bindings():
         try:

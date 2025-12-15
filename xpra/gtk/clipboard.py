@@ -151,6 +151,24 @@ class GTKClipboardProxy(ClipboardProxyCore, GObject.GObject):
             atoms = tuple(x.name() for x in get_targets())
             got_contents("ATOM", 32, atoms)
             return
+        if target == "text/uri-list":
+            import os
+            prefix = os.path.join("/lzcapp/clientfs/", os.getenv("LZC_CLIENT_ID"))
+            processed_uris = []
+            uris = self.clipboard.wait_for_uris()
+            for uri in uris:
+                if uri.startswith("file:///"):
+                    protocol = "file:///"
+                    file_path = uri[len(protocol):]
+                    new_uri = f"file://{prefix}/{file_path}"
+                    processed_uris.append(new_uri)
+                else:
+                    processed_uris.append(uri)
+
+            data = "\n".join(processed_uris) +"\n"
+            print(f"GOT URI LIST {uris} -> {processed_uris}")
+            got_contents(target, 8, data or "")
+            return
         if target in TEXT_TARGETS:
             text = self.clipboard.wait_for_text()
             got_contents(target, 8, text or "")
@@ -163,7 +181,7 @@ class GTKClipboardProxy(ClipboardProxyCore, GObject.GObject):
                 data = filter_data(dtype=target, dformat=8, data=data)
                 got_contents(target, 8, data)
                 return
-        log.warn("Warning: can't find request target atom {target}")
+        log.warn(f"Warning: can't find request target atom {target}")
         got_contents(target, 0, b"")
 
 
