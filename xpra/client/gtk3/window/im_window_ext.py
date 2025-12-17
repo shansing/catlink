@@ -29,6 +29,7 @@ class IMEnhancedWindow(GtkStubWindow):
         self.im_context.connect("preedit-changed", self._on_im_preedit_changed)
         self.im_context.connect("retrieve-surrounding", self._on_im_retrieve_surrounding)
         self.im_context.connect("delete-surrounding", self._on_im_delete_surrounding)
+        self.im_context.set_use_preedit(False)
         self.im_setup = False
         self.when_realized("init-focus", self._setup_im)
 
