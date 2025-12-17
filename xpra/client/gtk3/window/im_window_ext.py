@@ -11,11 +11,15 @@ from typing import Callable, Optional, Tuple
 
 import requests
 import os
+import sys
 
 typedict = Dict[str, Any]
 log = Logger("client", "window", "im")
 
 RIM_SERVER=os.getenv("RIM_SERVER")
+
+WIN32: bool = sys.platform.startswith("win")
+
 
 class IMEnhancedWindow(GtkStubWindow):
     """无冲突方案：复用KeyboardWindow回调，不新增信号绑定"""
@@ -29,7 +33,8 @@ class IMEnhancedWindow(GtkStubWindow):
         self.im_context.connect("preedit-changed", self._on_im_preedit_changed)
         self.im_context.connect("retrieve-surrounding", self._on_im_retrieve_surrounding)
         self.im_context.connect("delete-surrounding", self._on_im_delete_surrounding)
-        self.im_context.set_use_preedit(False)
+        if WIN32:
+            self.im_context.set_use_preedit(False)
         self.im_setup = False
         self.when_realized("init-focus", self._setup_im)
 
@@ -56,6 +61,9 @@ class IMEnhancedWindow(GtkStubWindow):
                 geo = self.get_window().get_geometry()
                 _x = x * self._xscale  - geo.x
                 _y = y * self._yscale -  geo.y
+                if WIN32:
+                    _x -= geo.x
+                    _y -= geo.y
                 # 构造默认光标矩形（输入法只需要存在，不需要精准位置）
                 cursor_rect = Gdk.Rectangle()
                 cursor_rect.x = _x
