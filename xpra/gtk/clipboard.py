@@ -24,6 +24,28 @@ log = Logger("clipboard")
 BLOCK_DELAY = envint("XPRA_CLIPBOARD_BLOCK_DELAY", 5)
 
 
+import struct
+import codecs
+def parse_windows_CF_HDROP(hdrop_data: bytes, prefix: str) -> list[str]:
+    """
+    解析 CF_HDROP 格式的二进制数据为文件路径列表
+    """
+    if len(hdrop_data) < 20:
+        raise ValueError("无效的 CF_HDROP 数据：长度不足")
+
+    offset = struct.unpack("<I", hdrop_data[:4])[0]  # 小端序解析4字节偏移量
+
+    path_data = hdrop_data[offset:]
+    if not path_data:
+        return []
+
+    try:
+        utf16_str = codecs.decode(path_data, "utf-16le", errors="ignore")
+        paths = [f"{prefix}{p}" for p in utf16_str.rstrip("\x00").split("\x00") if p]
+        return paths
+    except Exception as e:
+        raise ValueError(f"解析路径失败：{e}") from e
+
 class GTK_Clipboard(ClipboardTimeoutHelper):
 
     def __repr__(self):
@@ -156,10 +178,14 @@ class GTKClipboardProxy(ClipboardProxyCore, GObject.GObject):
             prefix = os.path.join("/lzcapp/clientfs/", os.getenv("LZC_CLIENT_ID"))
             processed_uris = []
             uris = self.clipboard.wait_for_uris()
+            if len(uris) == 0:
+                sel = self.clipboard.wait_for_contents(Gdk.Atom.intern("CF_HDROP", False))
+                if sel != None:
+                    uris = parse_windows_CF_HDROP(sel.get_data(), "file://")
             for uri in uris:
-                if uri.startswith("file:///"):
-                    protocol = "file:///"
-                    file_path = uri[len(protocol):]
+                if uri.startswith("file://"):
+                    protocol = "file://"
+                    file_path = uri[len(protocol):].replace("\\", "/")
                     new_uri = f"file://{prefix}/{file_path}"
                     processed_uris.append(new_uri)
                 else:
