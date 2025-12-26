@@ -632,6 +632,7 @@ class GTKClientWindowBase(ClientWindowBase, Gtk.Window):
                     # tell server, but wait a bit to try to prevent races:
                     self.schedule_send_iconify()
             else:
+                server_updates["iconified"] = False
                 self.cancel_send_iconifiy_timer()
                 self._frozen = False
                 self.process_map_event()
