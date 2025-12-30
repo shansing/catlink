@@ -360,6 +360,9 @@ def proxy_connect(options: dict):
         raise ValueError(f"cannot connect via a proxy: {e}") from None
     to = typedict(options)
     ptype = to.strget("proxy-type")
+    if ptype == "HTTP":
+        # see also: https://github.com/Anorov/PySocks/issues/29
+        return http_proxy_connect(options)
     proxy_type = {
         "SOCKS5": socks.SOCKS5,
         "SOCKS4": socks.SOCKS4,
@@ -378,3 +381,31 @@ def proxy_connect(options: dict):
     sock.settimeout(timeout)
     sock.connect((host, port))
     return sock
+
+
+def http_proxy_connect(options: dict):
+    to = typedict(options)
+    host = options.get("host")
+    port = options.get("port")
+    proxy_host = options.get("proxy-host")
+    proxy_port = to.intget("proxy-port", 1080)
+    timeout = options.get("timeout", CONNECT_TIMEOUT)
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+
+    try:
+        sock.connect((proxy_host, proxy_port))
+
+        connect_request = f"CONNECT {host}:{port} HTTP/1.0\r\nHost: {host}:{port}\r\n\r\n"
+        sock.send(connect_request.encode())
+
+        response = sock.recv(4096).decode()
+        if not response.startswith("HTTP/1.0 200"):
+            raise InitException(f"proxy CONNECT failed: {response}")
+        sock.settimeout(None)
+        return sock
+
+    except Exception as e:
+        noerr(sock.close)
+        raise InitException(f"failed to connect via proxy: {e}")
