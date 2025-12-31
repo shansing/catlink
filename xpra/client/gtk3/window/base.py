@@ -301,10 +301,22 @@ class GTKClientWindowBase(ClientWindowBase, Gtk.Window):
         # try to honour the initial position
         geomlog("setup_window() position=%s, set_initial_position=%s, OR=%s, decorated=%s",
                 self._pos, self._set_initial_position, self.is_OR(), self.get_decorated())
+
+
         # honour "set-initial-position"
         if self._set_initial_position or self.is_OR():
             self.set_initial_position(self._requested_position or self._pos)
         self.set_default_size(*self._size)
+
+        if hasattr(self, '_requested_position') and self._requested_position:
+            def _move():
+                x, y = self.sp(*self.adjusted_position(*self._requested_position))
+                self.move(x, y)
+
+            if self.get_realized():
+                _move()
+            else:
+                self.when_realized("setup-position", _move)
 
     def set_initial_position(self, pos) -> None:
         x, y = self.adjusted_position(*pos)
