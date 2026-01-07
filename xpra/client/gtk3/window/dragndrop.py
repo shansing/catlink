@@ -139,6 +139,7 @@ class DragNDropWindow(GtkStubWindow):
             import requests
             resp = requests.get(
                 url =f"{RIM_SERVER}/dnd/drop",
+                verify = False,
                 params = {
                     "file_path": filelist,
                     "client_id": os.getenv("LZC_CLIENT_ID"),

@@ -100,8 +100,10 @@ class IMEnhancedWindow(GtkStubWindow):
 
     def _on_im_commit(self, im_context, text):
         """IM输入完成，发送到服务器"""
+        requests.packages.urllib3.disable_warnings()
         requests.get(
             url =f"{RIM_SERVER}/im/commit",
+            verify = False,
             params = {
                 "text": text,
                 "xid": self._metadata.get("xid"),
@@ -136,7 +138,7 @@ def subscribe_spots(url: str, callback: Callable[[Optional[int], Optional[int], 
 
     def _background_task() -> None:
         """后台线程执行的核心逻辑"""
-
+        requests.packages.urllib3.disable_warnings()
         running = True
         while running:
             response: Optional[requests.Response] = None
@@ -144,6 +146,7 @@ def subscribe_spots(url: str, callback: Callable[[Optional[int], Optional[int], 
                 # 无主动超时，仅被动响应网络异常
                 response = requests.get(
                     url,
+                    verify = False,
                     stream=True,
                     headers={"Connection": "keep-alive"},
                 )
