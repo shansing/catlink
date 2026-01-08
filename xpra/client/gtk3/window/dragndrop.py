@@ -24,10 +24,13 @@ log = Logger("window", "events", "dragndrop")
 def xid(w) -> int:
     # TODO: use a generic window handle function
     # this only used for debugging for now
-    if w and POSIX:
-        return w.get_xid()
+    try:
+        if w and POSIX:
+            return w.get_xid()
+    except Exception:
+        # get_xid() need import GdkX11 under wayland
+        pass
     return 0
-
 
 def drag_drop_cb(widget, context, x: int, y: int, time: int) -> None:
     targets = list(x.name() for x in context.list_targets())
