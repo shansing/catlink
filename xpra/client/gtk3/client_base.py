@@ -108,14 +108,12 @@ def get_local_cursor(cursor_name: str):
                 if first_time("cursor:%s" % cursor_name.upper()):
                     log.error("Error creating cursor %s: %s", cursor_name.upper(), e)
     if cursor:
-        pixbuf = cursor.get_image()
-        cursorlog("image=%s", pixbuf)
-        return pixbuf
+        cursorlog("cursor=%s", cursor)
+        return cursor
     if cursor_name not in missing_cursor_names:
         cursorlog("cursor name '%s' not found", cursor_name)
         missing_cursor_names.add(cursor_name)
     return None
-
 
 def get_group_ref(metadata: dict) -> str:
     # ie: refs="group-leader-xid" or "pid+class-instance"
@@ -982,7 +980,9 @@ class GTKXpraClient(GObjectXpraClient, UIXpraClient):
         pixbuf = None
         if len(cursor_data) >= 10 and cursor_types and USE_LOCAL_CURSORS:
             cursor_name = bytestostr(cursor_data[9])
-            pixbuf = get_local_cursor(cursor_name)
+            cursor = get_local_cursor(cursor_name)
+            if cursor != None:
+                return cursor
         # create cursor from the pixel data:
         encoding, _, _, w, h, xhot, yhot, serial, pixels = cursor_data[0:9]
         encoding = bytestostr(encoding)
