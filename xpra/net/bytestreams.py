@@ -160,7 +160,10 @@ class Connection:
         self.set_active(False)
 
     def can_retry(self, e) -> bool | str:
-        return can_retry(e)
+        result = can_retry(e)
+        if not isinstance(e, BlockingIOError):
+            log.info("can_retry %s -> %r", type(e).__name__, result)
+        return result
 
     def untilConcludes(self, *args):
         return untilConcludes(self.is_active, self.can_retry, *args)

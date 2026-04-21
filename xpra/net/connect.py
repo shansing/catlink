@@ -156,7 +156,14 @@ def connect_to_tcp(display_desc: dict[str, Any]):
             raise InitExit(ExitCode.UNSUPPORTED, f"cannot handle websocket connection: {e}") from None
         else:
             display_path = display_desc_to_display_path(display_desc)
-            client_upgrade(conn.read, conn.write, host, port, display_path)
+            read = conn.read
+            if display_desc.get("websocket-raw-recv", False):
+                raw_sock = conn.get_raw_socket()
+                if raw_sock:
+                    Logger("network").info("connect_to_tcp websocket-upgrade using raw recv")
+                    # This can bypass timeout retry in untilConcludes()
+                    read = raw_sock.recv
+            client_upgrade(read, conn.write, host, port, display_path, conn)
     conn.target = get_host_target_string(display_desc)
     return conn
 

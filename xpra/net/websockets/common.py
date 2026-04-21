@@ -21,6 +21,7 @@ log = Logger("websocket")
 
 MAX_WRITE_TIME = 5
 MAX_READ_TIME = 5
+UPGRADE_SOCKET_TIMEOUT = 5
 READ_CHUNK_SIZE = 4096
 
 HEADERS_MODULES = os.environ.get("XPRA_WEBSOCKET_HEADERS_MODULES", "default").split(",")
@@ -70,13 +71,26 @@ def get_headers(host: str, port: int) -> dict[bytes, bytes]:
     return headers
 
 
-def client_upgrade(read: Callable, write: Callable, host: str, port: int, path="") -> None:
-    key = b64encode(uuid.uuid4().bytes)
-    request = get_client_upgrade_request(host, port, path, key)
-    write_request(write, request)
-    headers = read_server_upgrade(read)
-    verify_response_headers(headers, key)
-    log("client_upgrade: done")
+def client_upgrade(read: Callable, write: Callable, host: str, port: int, path="", conn=None) -> None:
+    sock = conn.get_raw_socket() if conn else None
+    old_timeout = None
+    if sock:
+        old_timeout = sock.gettimeout()
+        # function get_client_upgrade_request might get stuck indefinitely in certain environments,
+        # such as LazyCat Microservice (which has a web frontend server like nginx,
+        # uses a proxy, and experiences unexpected server restarts).
+        # Temporarily modifying the timeout period can resolve this issue.
+        sock.settimeout(UPGRADE_SOCKET_TIMEOUT)
+    try:
+        key = b64encode(uuid.uuid4().bytes)
+        request = get_client_upgrade_request(host, port, path, key)
+        write_request(write, request)
+        headers = read_server_upgrade(read)
+        verify_response_headers(headers, key)
+        log("client_upgrade: done")
+    finally:
+        if sock:
+            sock.settimeout(old_timeout)
 
 
 def get_client_upgrade_request(host: str, port: int, path: str, key: bytes) -> bytes:
@@ -110,9 +124,15 @@ def read_server_upgrade(read: Callable) -> dict[str, str]:
     def hasheader(k) -> bool:
         return k in parse_response_header(response)
 
+    log.info("websocket read_server_upgrade start")
     while monotonic() - now < MAX_READ_TIME and not (
             hasheader("sec-websocket-protocol") or hasheader("www-authenticate")):
         response += read(READ_CHUNK_SIZE)
+    log.info(
+        "websocket read_server_upgrade exit elapsed=%.3f total_bytes=%i",
+        monotonic() - now,
+        len(response),
+        )
     return parse_response_header(response)
 
 
