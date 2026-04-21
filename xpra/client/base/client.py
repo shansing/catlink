@@ -32,12 +32,13 @@ from xpra.util.child_reaper import get_child_reaper, reaper_cleanup
 from xpra.util.system import SIGNAMES, register_SIGUSR_signals
 from xpra.util.io import stderr_print
 from xpra.util.objects import typedict
+from xpra.util.thread import start_thread
 from xpra.util.str_fn import (
     Ellipsizer, repr_ellipsized, print_nested_dict,
     bytestostr, hexstr,
 )
 from xpra.util.env import envbool
-from xpra.exit_codes import ExitCode, ExitValue, exit_str
+from xpra.exit_codes import ExitCode, ExitValue, RETRY_EXIT_CODES, exit_str
 from xpra.log import Logger
 
 GLib = gi_import("GLib")
@@ -98,6 +99,11 @@ class XpraClientBase(ClientBaseClass):
         self.server_client_shutdown = True
         self.server_compressors = []
         self.verify_connected_timer = 0
+        self.connection_probe_timer = 0
+        self.connection_probe_fn = None
+        self.connection_probe_delay_ms = 1000
+        self.connection_probe_active = False
+        self.connection_probe_generation = 0
         # protocol stuff:
         self._protocol = None
         self._priority_packets: list[Packet] = []
@@ -247,6 +253,14 @@ class XpraClientBase(ClientBaseClass):
             self.verify_connected_timer = 0
             GLib.source_remove(vct)
 
+    def cancel_connection_probe_timer(self) -> None:
+        self.connection_probe_generation += 1
+        self.connection_probe_active = False
+        rt = self.connection_probe_timer
+        if rt:
+            self.connection_probe_timer = 0
+            GLib.source_remove(rt)
+
     def schedule_verify_connected(self):
         conn = getattr(self._protocol, "_conn", None)
         if not conn:
@@ -254,6 +268,7 @@ class XpraClientBase(ClientBaseClass):
         self.verify_connected_timer = GLib.timeout_add((conn.timeout + EXTRA_TIMEOUT) * 1000, self.verify_connected)
 
     def setup_connection(self, conn) -> None:
+        self.cancel_connection_probe_timer()
         for bc in CLIENT_BASES:
             bc.setup_connection(self, conn)
 
@@ -389,6 +404,7 @@ class XpraClientBase(ClientBaseClass):
         return packet, synchronous, has_more
 
     def cleanup(self) -> None:
+        self.cancel_connection_probe_timer()
         reaper_cleanup()
         for bc in CLIENT_BASES:
             with log.trap_error(f"Error cleaning {bc!r} handler"):
@@ -417,6 +433,124 @@ class XpraClientBase(ClientBaseClass):
     def warn_and_quit(self, exit_code: ExitValue, message: str) -> None:
         log.warn(message)
         self.quit(exit_code)
+
+    def schedule_connection_probe(self, message: str, exit_code: ExitCode) -> bool:
+        probe = self.connection_probe_fn
+        if not callable(probe):
+            print(
+                "schedule_connection_probe() skipped",
+                f"message={message!r}",
+                f"exit_code={exit_code}",
+                "probe=False",
+                flush=True,
+            )
+            return False
+        if self.connection_probe_timer:
+            print(
+                "schedule_connection_probe() already-running",
+                f"message={message!r}",
+                f"exit_code={exit_code}",
+                f"timer={self.connection_probe_timer}",
+                flush=True,
+            )
+            return True
+        print(
+            "schedule_connection_probe() start",
+            f"message={message!r}",
+            f"exit_code={exit_code}",
+            f"completed_startup={self.completed_startup}",
+            f"connection_established={self.connection_established}",
+            flush=True,
+        )
+        log.warn(message)
+        if hasattr(self, "_server_ok"):
+            self._server_ok = False
+            scc = getattr(self, "server_connection_state_change", None)
+            if callable(scc):
+                scc()
+        self.show_progress(80, "waiting for server connection to recover")
+        p = self._protocol
+        if p:
+            self._protocol = None
+            log("calling %s", p.close)
+            p.close()
+
+        generation = self.connection_probe_generation
+
+        def probe_finished(probe_generation: int, ok: bool) -> bool:
+            if probe_generation != self.connection_probe_generation:
+                print(
+                    "schedule_connection_probe() stale-result",
+                    f"probe_generation={probe_generation}",
+                    f"current_generation={self.connection_probe_generation}",
+                    flush=True,
+                )
+                return False
+            self.connection_probe_active = False
+            print(
+                "schedule_connection_probe() tick",
+                f"ok={ok}",
+                f"exit_code={exit_code}",
+                flush=True,
+            )
+            if self.exit_code is not None:
+                print(
+                    "schedule_connection_probe() stop",
+                    "reason='exit-code-set-after-probe'",
+                    f"exit_code={self.exit_code}",
+                    flush=True,
+                )
+                self.connection_probe_timer = 0
+                return False
+            if ok:
+                print(
+                    "schedule_connection_probe() recovered",
+                    f"exit_code={exit_code}",
+                    "action='quit-for-original-reconnect'",
+                    flush=True,
+                )
+                self.connection_probe_timer = 0
+                self.quit(exit_code)
+                return False
+            # The timeout callback owns retries; this idle callback must not repeat.
+            return False
+
+        def probe_in_thread(probe_generation: int) -> None:
+            ok = False
+            try:
+                ok = probe()
+            except Exception as e:
+                print(
+                    "schedule_connection_probe() exception",
+                    f"err={e!r}",
+                    flush=True,
+                )
+                log("connection probe failed", exc_info=True)
+            GLib.idle_add(probe_finished, probe_generation, ok)
+
+        def run_probe() -> bool:
+            if self.exit_code is not None:
+                print(
+                    "schedule_connection_probe() stop",
+                    f"reason='exit-code-set'",
+                    f"exit_code={self.exit_code}",
+                    flush=True,
+                )
+                self.connection_probe_timer = 0
+                return False
+            if self.connection_probe_active:
+                print(
+                    "schedule_connection_probe() pending",
+                    f"generation={self.connection_probe_generation}",
+                    flush=True,
+                )
+                return True
+            self.connection_probe_active = True
+            start_thread(probe_in_thread, "connection-probe", daemon=True, args=(generation,))
+            return True
+
+        self.connection_probe_timer = GLib.timeout_add(self.connection_probe_delay_ms, run_probe)
+        return True
 
     def send_shutdown_server(self) -> None:
         assert self.server_client_shutdown
@@ -487,6 +621,16 @@ class XpraClientBase(ClientBaseClass):
             exit_code = ExitCode.CONNECTION_LOST
         if self.exit_code is None:
             msg = exit_str(exit_code).lower().replace("_", " ").replace("connection", "Connection")
+            print(
+                "_process_connection_lost()",
+                f"exit_code={exit_code}",
+                f"message={msg!r}",
+                f"completed_startup={self.completed_startup}",
+                f"connection_established={self.connection_established}",
+                flush=True,
+            )
+            if self.completed_startup and exit_code in RETRY_EXIT_CODES and self.schedule_connection_probe(msg, exit_code):
+                return
             self.warn_and_quit(exit_code, msg)
 
     def _process_hello(self, packet: Packet) -> None:
