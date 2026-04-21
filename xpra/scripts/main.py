@@ -73,6 +73,7 @@ assert callable(error), "used by modules importing this function from here"
 NO_ROOT_WARNING: bool = envbool("XPRA_NO_ROOT_WARNING", False)
 WAIT_SERVER_TIMEOUT: int = envint("WAIT_SERVER_TIMEOUT", 90)
 CONNECT_TIMEOUT: int = envint("XPRA_CONNECT_TIMEOUT", 20)
+CONNECTION_PROBE_CONNECT_TIMEOUT: int = envint("XPRA_CONNECTION_PROBE_CONNECT_TIMEOUT", 5)
 OPENGL_PROBE_TIMEOUT: int = envint("XPRA_OPENGL_PROBE_TIMEOUT", 5)
 SYSTEMD_RUN: bool = envbool("XPRA_SYSTEMD_RUN", True)
 VERIFY_SOCKET_TIMEOUT: int = envint("XPRA_VERIFY_SOCKET_TIMEOUT", 1)
@@ -1176,7 +1177,9 @@ def single_display_match(dir_servers, error_cb,
 def connect_or_fail(display_desc, opts):
     from xpra.net.bytestreams import ConnectionClosedException
     from xpra.net.connect import connect_to
+    log = Logger("network")
     try:
+        log.info("executing connect_to...")
         return connect_to(display_desc, opts)
     except ConnectionClosedException as e:
         raise InitExit(ExitCode.CONNECTION_FAILED, str(e)) from None
@@ -1418,28 +1421,27 @@ def connect_to_server(app, display_desc: dict[str, Any], opts) -> None:
         call = GLib.idle_add
 
     def probe_connection() -> bool:
-        print(
-            "probe_connection() start",
-            f"display={display_desc.get('display_name') or display_desc.get('display') or ''!r}",
-            f"type={display_desc.get('type')!r}",
-            flush=True,
-        )
-        conn = connect_or_fail(display_desc, opts)
-        if not conn:
-            print(
-                "probe_connection() no-conn",
-                flush=True,
+        log = Logger("network")
+        probe_display_desc = display_desc.copy()
+        probe_display_desc["retry"] = False
+        probe_display_desc["timeout"] = CONNECTION_PROBE_CONNECT_TIMEOUT
+        probe_display_desc["websocket-raw-recv"] = True
+        log.info(
+            "probe_connection() start display=%r type=%r timeout=%r",
+            probe_display_desc.get('display_name') or probe_display_desc.get('display') or '',
+            probe_display_desc.get('type'),
+            probe_display_desc.get('timeout'),
             )
+        log.info("probe_connection() ready to execute connect_or_fail")
+        conn = connect_or_fail(probe_display_desc, opts)
+        if not conn:
+            log.info("probe_connection() no-conn")
             return False
         try:
             conn.close()
         except Exception:
             log("probe_connection() close failed", exc_info=True)
-        print(
-            "probe_connection() success",
-            f"target={getattr(conn, 'target', None)!r}",
-            flush=True,
-        )
+        log.info("probe_connection() success target=%r", getattr(conn, "target", None))
         return True
 
     if opts.reconnect is not False and hasattr(app, "connection_probe_fn"):
