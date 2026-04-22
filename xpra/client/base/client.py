@@ -539,11 +539,11 @@ class XpraClientBase(ClientBaseClass):
                 self.connection_probe_timer = 0
                 return False
             if self.connection_probe_active:
-                print(
-                    "schedule_connection_probe() pending",
-                    f"generation={self.connection_probe_generation}",
-                    flush=True,
-                )
+                # print(
+                #     "schedule_connection_probe() pending",
+                #     f"generation={self.connection_probe_generation}",
+                #     flush=True,
+                # )
                 return True
             self.connection_probe_active = True
             start_thread(probe_in_thread, "connection-probe", daemon=True, args=(generation,))
