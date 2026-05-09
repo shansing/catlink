@@ -1367,6 +1367,9 @@ def exec_reconnect(script_file: str, cmdline: list[str]) -> ExitCode:
 
 
 def win32_reconnect(script_file: str, cmdline: list[str]) -> ExitCode:
+    if os.environ.get("CATLINK_SUPERVISED_RECONNECT") == "1":
+        return ExitCode.CATLINK_RECONNECT_REQUESTED
+
     # the cx_Freeze wrapper changes the cwd to the directory containing the exe,
     # so we have to re-construct the actual path to the exe:
     # see issue #4026

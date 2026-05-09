@@ -41,6 +41,7 @@ class ExitCode(IntEnum):
     OPENGL_UNSAFE = 30
     COMPONENT_MISSING = 31
     WM_ERROR = 32
+    CATLINK_RECONNECT_REQUESTED = 230
 
 
 ExitValue: TypeAlias = ExitCode | int
