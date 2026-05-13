@@ -97,11 +97,12 @@ def should_warn(name: str) -> bool:
 def pillow_import_block() -> None:
     # the only ones we want to keep:
     # "Bmp", "Gif", "Ppm", "Png", "Jpeg", "Xpm"
+    # and "Tiff" for macOS
     for image_plugin in (
         "Blp", "Cur", "Pcx", "Dcx", "Dds", "Eps", "Fits", "Fli",
         "Fpx", "Ftex", "Gbr", "Jpeg2K", "Icns", "Ico",
         "Im", "Imt",
-        "Iptc", "McIdas", "Mic", "Mpeg", "Tiff", "Mpo", "Msp",
+        "Iptc", "McIdas", "Mic", "Mpeg", "Mpo", "Msp",
         "Palm", "Pcd", "Pdf", "Pixar", "Psd", "Qoi",
         "Sgi", "Spider", "Sun", "Tga",
         "Wmf", "Xbm", "XVThumb",

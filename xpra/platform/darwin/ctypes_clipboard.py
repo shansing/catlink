@@ -7,7 +7,7 @@ from io import BytesIO
 from collections.abc import Sequence
 
 from AppKit import (
-    NSStringPboardType, NSTIFFPboardType, NSPasteboardTypePNG, NSPasteboardTypeURL,
+    NSStringPboardType, NSPasteboardTypePNG, NSPasteboardTypeTIFF, NSPasteboardTypeURL,
     NSPasteboard,
 )
 from CoreFoundation import NSData, CFDataGetBytes, CFDataGetLength
@@ -95,7 +95,7 @@ class OSXClipboardProxy(ClipboardProxyCore):
         if any(t in (NSStringPboardType, NSPasteboardTypeURL, "public.utf8-plain-text", "public.html", "TEXT") for t in
                types):
             targets += ["TEXT", "STRING", "text/plain", "text/plain;charset=utf-8", "UTF8_STRING"]
-        if any(t in (NSTIFFPboardType, NSPasteboardTypePNG) for t in types):
+        if any(t in (NSPasteboardTypeTIFF, NSPasteboardTypePNG) for t in types):
             targets += IMAGE_FORMATS
         log("get_targets() targets(%s)=%s", types, targets)
         return targets
@@ -126,15 +126,15 @@ class OSXClipboardProxy(ClipboardProxyCore):
         if target == "image/png" and NSPasteboardTypePNG in types:
             src_dtype = target
             img_data = self.pasteboard.dataForType_(NSPasteboardTypePNG)
-        elif target == "image/tiff" and NSTIFFPboardType in types:
+        elif target == "image/tiff" and NSPasteboardTypeTIFF in types:
             src_dtype = target
-            img_data = self.pasteboard.dataForType_(NSTIFFPboardType)
+            img_data = self.pasteboard.dataForType_(NSPasteboardTypeTIFF)
         elif NSPasteboardTypePNG in types:
             src_dtype = "image/png"
             img_data = self.pasteboard.dataForType_(NSPasteboardTypePNG)
-        elif NSTIFFPboardType in types:
+        elif NSPasteboardTypeTIFF in types:
             src_dtype = "image/tiff"
-            img_data = self.pasteboard.dataForType_(NSTIFFPboardType)
+            img_data = self.pasteboard.dataForType_(NSPasteboardTypeTIFF)
         else:
             log("image target '%s' not found in %s", target, types)
             return None
@@ -204,7 +204,7 @@ class OSXClipboardProxy(ClipboardProxyCore):
         img = open_only(data, (img_type,))
         for img_type, macos_types in {
             "png": [NSPasteboardTypePNG, "image/png"],
-            "tiff": [NSTIFFPboardType, "image/tiff"],
+            "tiff": [NSPasteboardTypeTIFF, "image/tiff"],
             "jpeg": ["public.jpeg", "image/jpeg"],
         }.items():
             try:
