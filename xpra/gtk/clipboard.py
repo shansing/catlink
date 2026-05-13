@@ -8,6 +8,7 @@ from time import monotonic
 from xpra.util.gobject import n_arg_signal, one_arg_signal
 from xpra.clipboard.common import ClipboardCallback
 from xpra.clipboard.targets import TEXT_TARGETS
+from xpra.clipboard.uri import file_uri_to_clientfs_uri
 from xpra.clipboard.proxy import ClipboardProxyCore, filter_data
 from xpra.clipboard.timeout import ClipboardTimeoutHelper
 from xpra.os_util import gi_import
@@ -174,14 +175,6 @@ class GTKClipboardProxy(ClipboardProxyCore, GObject.GObject):
             got_contents("ATOM", 32, atoms)
             return
         if target == "text/uri-list":
-            import os
-            client_id = os.getenv("LZC_CLIENT_ID")
-            uid = os.getenv("LZC_CDE_UID")
-            if uid:
-                prefix = os.path.join("/lzcapp/clientfs/", uid, ".byid", client_id or "")
-            else:
-                log.warn("Warning: LZC_CDE_UID is not set, using legacy clientfs clipboard path but may not work")
-                prefix = os.path.join("/lzcapp/clientfs/", client_id)
             processed_uris = []
             uris = self.clipboard.wait_for_uris()
             if len(uris) == 0:
@@ -190,10 +183,7 @@ class GTKClipboardProxy(ClipboardProxyCore, GObject.GObject):
                     uris = parse_windows_CF_HDROP(sel.get_data(), "file://")
             for uri in uris:
                 if uri.startswith("file://"):
-                    protocol = "file://"
-                    file_path = uri[len(protocol):].replace("\\", "/")
-                    new_uri = f"file://{prefix}/{file_path}"
-                    processed_uris.append(new_uri)
+                    processed_uris.append(file_uri_to_clientfs_uri(uri))
                 else:
                     processed_uris.append(uri)
 

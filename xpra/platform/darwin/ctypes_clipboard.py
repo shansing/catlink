@@ -7,7 +7,8 @@ from io import BytesIO
 from collections.abc import Sequence
 
 from AppKit import (
-    NSStringPboardType, NSPasteboardTypePNG, NSPasteboardTypeTIFF, NSPasteboardTypeURL,
+    NSURL, NSStringPboardType, NSPasteboardTypeFileURL, NSPasteboardTypePNG,
+    NSPasteboardTypeTIFF, NSPasteboardTypeURL, NSPasteboardURLReadingFileURLsOnlyKey,
     NSPasteboard,
 )
 from CoreFoundation import NSData, CFDataGetBytes, CFDataGetLength
@@ -15,6 +16,7 @@ from CoreFoundation import NSData, CFDataGetBytes, CFDataGetLength
 from xpra.clipboard.timeout import ClipboardTimeoutHelper
 from xpra.clipboard.common import ClipboardCallback
 from xpra.clipboard.targets import _filter_targets, TEXT_TARGETS
+from xpra.clipboard.uri import file_path_to_clientfs_uri
 from xpra.clipboard.proxy import ClipboardProxyCore, filter_data
 from xpra.platform.ui_thread_watcher import get_ui_watcher
 from xpra.util.str_fn import csv, Ellipsizer, bytestostr
@@ -30,6 +32,7 @@ TARGET_TRANS = {
 }
 
 IMAGE_FORMATS = ["image/png", "image/jpeg", "image/tiff"]
+URI_TARGETS = ("text/uri-list",)
 
 
 def filter_targets(targets) -> Sequence[str]:
@@ -89,9 +92,32 @@ class OSXClipboardProxy(ClipboardProxyCore):
         log("get_clipboard_text() NSStringPboardType='%s' (%s)", text, type(text))
         return str(text)
 
+    def get_file_urls(self) -> list:
+        urls = self.pasteboard.readObjectsForClasses_options_(
+            [NSURL],
+            {NSPasteboardURLReadingFileURLsOnlyKey: True},
+        )
+        log("get_file_urls()=%s", urls)
+        return list(urls or ())
+
+    def get_uri_list(self) -> str:
+        uris = []
+        for url in self.get_file_urls():
+            path = url.path()
+            if not path:
+                continue
+            uris.append(file_path_to_clientfs_uri(str(path)))
+        data = "\n".join(uris)
+        if data:
+            data += "\n"
+        log("get_uri_list()=%s", data)
+        return data
+
     def get_targets(self) -> list[str]:
         types = self.pasteboard.types()
         targets = []
+        if NSPasteboardTypeFileURL in types:
+            targets += URI_TARGETS
         if any(t in (NSStringPboardType, NSPasteboardTypeURL, "public.utf8-plain-text", "public.html", "TEXT") for t in
                types):
             targets += ["TEXT", "STRING", "text/plain", "text/plain;charset=utf-8", "UTF8_STRING"]
@@ -104,6 +130,9 @@ class OSXClipboardProxy(ClipboardProxyCore):
         log("get_contents%s", (target, got_contents))
         if target == "TARGETS":
             got_contents("ATOM", 32, self.get_targets())
+            return
+        if target in URI_TARGETS:
+            got_contents(target, 8, self.get_uri_list())
             return
         if target in IMAGE_FORMATS:
             try:
