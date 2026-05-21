@@ -11,6 +11,7 @@
 import re
 import uuid
 import shlex
+import os
 import os.path
 import optparse
 import warnings
@@ -46,6 +47,36 @@ MODE_ALIAS: dict[str, str] = {
     "start-shadow": "shadow",
     "start-shadow-screen": "shadow-screen",
 }
+
+
+def apply_catlink_dpi_env(options) -> None:
+    desktop_scaling = os.environ.get("CATLINK_DESKTOP_SCALING")
+    if desktop_scaling is not None:
+        original_desktop_scaling = options.desktop_scaling
+        options.desktop_scaling = desktop_scaling
+        warn(
+            f"catlink dpi: desktop-scaling={original_desktop_scaling!r} "
+            f"overridden by CATLINK_DESKTOP_SCALING={desktop_scaling!r}"
+        )
+    divisor = os.environ.get("CATLINK_DPI_DIVISOR")
+    if options.dpi > 0 and divisor is not None:
+        try:
+            divisor_value = float(divisor)
+            if divisor_value > 0 and divisor_value != 1:
+                original_dpi = options.dpi
+                options.dpi = round(options.dpi / divisor_value)
+                warn(f"catlink dpi: dpi={original_dpi} / divisor={divisor_value} -> {options.dpi}")
+                return
+        except (TypeError, ValueError):
+            warn(f"catlink dpi: invalid CATLINK_DPI_DIVISOR={divisor!r}")
+    auto_dpi = os.environ.get("CATLINK_AUTO_DPI")
+    if options.dpi <= 0 and auto_dpi is not None:
+        try:
+            original_dpi = options.dpi
+            options.dpi = int(auto_dpi)
+            warn(f"catlink dpi: dpi={original_dpi} overridden by CATLINK_AUTO_DPI={options.dpi}")
+        except (TypeError, ValueError):
+            warn(f"catlink dpi: invalid CATLINK_AUTO_DPI={auto_dpi!r}")
 REVERSE_MODE_ALIAS: dict[str, str] = {v: k for k, v in MODE_ALIAS.items()}
 
 
@@ -927,6 +958,7 @@ def do_parse_cmdline(cmdline: list[str], defaults) -> tuple[optparse.Values, lis
         except ValueError:
             options.sync_xvfb = 0
     options.dpi = parse_number(int, "dpi", options.dpi, 96)
+    apply_catlink_dpi_env(options)
 
     if options.min_size:
         options.min_size = "x".join(map(str, parse_window_size(options.min_size, "min-size")))
