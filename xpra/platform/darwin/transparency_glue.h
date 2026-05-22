@@ -11,3 +11,7 @@ void setOpaque(NSWindow *window, BOOL opaque);
 void setClearBackgroundColor(NSWindow *window);
 
 float getBackingScaleFactor(NSWindow *window);
+
+void rememberButtonPressEvent(void);
+void clearRememberedButtonPressEvent(void);
+BOOL performWindowDragWithRememberedEvent(NSWindow *window, double maxAge);

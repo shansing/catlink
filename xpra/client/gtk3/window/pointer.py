@@ -214,11 +214,27 @@ class PointerWindow(GtkStubWindow):
 
     def _do_button_press_event(self, event) -> None:
         # Gtk.Window.do_button_press_event(self, event)
+        if OSX and event.button == 1:
+            try:
+                from xpra.platform.darwin.gdk3_bindings import remember_button_press_event
+                remember_button_press_event()
+            except ImportError:
+                pass
+            except Exception:
+                log("failed to remember button press event", exc_info=True)
         button = _button_resolve(event.button)
         self._button_action(button, event, True)
 
     def _do_button_release_event(self, event) -> None:
         # Gtk.Window.do_button_release_event(self, event)
+        if OSX and event.button == 1:
+            try:
+                from xpra.platform.darwin.gdk3_bindings import clear_remembered_button_press_event
+                clear_remembered_button_press_event()
+            except ImportError:
+                pass
+            except Exception:
+                log("failed to clear remembered button press event", exc_info=True)
         button = _button_resolve(event.button)
         self._button_action(button, event, False)
 

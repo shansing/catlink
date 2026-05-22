@@ -1129,7 +1129,19 @@ class GTKClientWindowBase(ClientWindowBase, Gtk.Window):
             self.cancel_moveresize_timer()
         elif MOVERESIZE_GDK:
             if direction in (MoveResize.MOVE, MoveResize.MOVE_KEYBOARD):
-                self.begin_move_drag(button, x, y, 0)
+                native_move_drag = False
+                if OSX and direction == MoveResize.MOVE and button == 1:
+                    try:
+                        from xpra.platform.darwin.gdk3_bindings import perform_window_drag_with_remembered_event
+                        native_move_drag = perform_window_drag_with_remembered_event(self.get_window(), 3.0)
+                    except ImportError:
+                        pass
+                    except Exception:
+                        log("failed to perform remembered window drag", exc_info=True)
+                    if not native_move_drag:
+                        log.warn("Warning: falling back to GTK begin_move_drag on macOS")
+                if not native_move_drag:
+                    self.begin_move_drag(button, x, y, 0)
             else:
                 edge = GDK_MOVERESIZE_MAP.get(direction)
                 geomlog("edge(%s)=%s", MOVERESIZE_DIRECTION_STRING.get(direction), edge)

@@ -5,6 +5,45 @@
 
 #import <Cocoa/Cocoa.h>
 
+static NSEvent *rememberedButtonPressEvent = nil;
+static NSTimeInterval rememberedButtonPressTime = 0;
+
+void clearRememberedButtonPressEvent(void) {
+    [rememberedButtonPressEvent release];
+    rememberedButtonPressEvent = nil;
+    rememberedButtonPressTime = 0;
+}
+
+void rememberButtonPressEvent(void) {
+    NSEvent *event = [NSApp currentEvent];
+    if (event && [event type] == NSEventTypeLeftMouseDown) {
+        clearRememberedButtonPressEvent();
+        rememberedButtonPressEvent = [event retain];
+        rememberedButtonPressTime = [NSDate timeIntervalSinceReferenceDate];
+    }
+}
+
+BOOL performWindowDragWithRememberedEvent(NSWindow *window, double maxAge) {
+    if (!window) {
+        return NO;
+    }
+    if (!rememberedButtonPressEvent) {
+        return NO;
+    }
+    if ([rememberedButtonPressEvent window] != window) {
+        clearRememberedButtonPressEvent();
+        return NO;
+    }
+    NSTimeInterval age = [NSDate timeIntervalSinceReferenceDate] - rememberedButtonPressTime;
+    if (age < 0 || age > maxAge) {
+        clearRememberedButtonPressEvent();
+        return NO;
+    }
+    [window performWindowDragWithEvent:rememberedButtonPressEvent];
+    clearRememberedButtonPressEvent();
+    return YES;
+}
+
 void setOpaque(NSWindow *window, BOOL opaque) {
 	[window setOpaque:opaque];
 }
