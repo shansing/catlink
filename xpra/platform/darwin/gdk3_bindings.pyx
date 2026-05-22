@@ -35,6 +35,9 @@ cdef extern from "transparency_glue.h":
     void invalidateShadow(NSWindow *window)
     void setHasShadow(NSWindow *window, BOOL hasShadow)
     float getBackingScaleFactor(NSWindow *window)
+    void rememberButtonPressEvent()
+    void clearRememberedButtonPressEvent()
+    BOOL performWindowDragWithRememberedEvent(NSWindow *window, double maxAge)
 
 
 cdef extern from "gtk-3.0/gdk/quartz/gdkquartz-cocoa-access.h":
@@ -73,3 +76,13 @@ def enable_transparency(pywindow) -> None:
 def get_backing_scale_factor(pywindow) -> float:
     cdef NSWindow *window = get_nswindow(pywindow)
     return getBackingScaleFactor(window)
+
+def remember_button_press_event() -> None:
+    rememberButtonPressEvent()
+
+def clear_remembered_button_press_event() -> None:
+    clearRememberedButtonPressEvent()
+
+def perform_window_drag_with_remembered_event(pywindow, double max_age=1.0) -> bool:
+    cdef NSWindow *window = get_nswindow(pywindow)
+    return bool(performWindowDragWithRememberedEvent(window, max_age))
