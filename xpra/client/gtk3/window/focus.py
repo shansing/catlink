@@ -70,12 +70,20 @@ class FocusWindow(GtkStubWindow):
                     log.warn(" you may experience window focus issues")
             else:
                 log("adding event receiver so we can get FocusIn and FocusOut events whilst grabbing the keyboard")
-                xid = self.get_window().get_xid()
-                add_event_receiver(xid, self)
-
-                def remove_hook() -> None:
-                    remove_event_receiver(xid, self)
-                self.remove_event_receiver = remove_hook
+                gdkwindow = self.get_window()
+                get_xid = getattr(gdkwindow, "get_xid", None)
+                if not callable(get_xid):
+                    log.warn("Warning: cannot add X11 focus event receiver")
+                    log.warn(" Gdk window %s has no get_xid() method", gdkwindow)
+                    def remove_hook() -> None:
+                        pass
+                    self.remove_event_receiver = remove_hook
+                else:
+                    xid = get_xid()
+                    add_event_receiver(xid, self)
+                    def remove_hook() -> None:
+                        remove_event_receiver(xid, self)
+                    self.remove_event_receiver = remove_hook
 
         # other platforms should be getting regular focus events instead:
 
@@ -83,14 +91,16 @@ class FocusWindow(GtkStubWindow):
             log("focus-in-event for wid=%#x", self.wid)
             self.do_x11_focus_in_event(event)
 
-            self.im_context.focus_in()
-            self.im_context.reset()
+            # let client.gtk3.window.im_window_ext.IMEnhancedWindow._on_im_focus_in do this
+            # self.im_context.focus_in()
+            # self.im_context.reset()
 
         def focus_out(_window, event) -> None:
             log("focus-out-event for wid=%#x", self.wid)
             self.do_x11_focus_out_event(event)
 
-            self.im_context.focus_out()
+            # let client.gtk3.window.im_window_ext.IMEnhancedWindow._on_im_focus_out do this
+            # self.im_context.focus_out()
 
         self.connect("focus-in-event", focus_in)
         self.connect("focus-out-event", focus_out)

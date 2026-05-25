@@ -1,10 +1,9 @@
 # xpra/xpra/client/gtk3/window/im_window_ext.py
 import gi
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk, Gdk
+from gi.repository import Gtk, Gdk, GLib
 from xpra.log import Logger
 from xpra.client.gtk3.window.stub_window import GtkStubWindow
-from xpra.client.gtk3.window.keyboard import KeyboardWindow  # 导入KeyboardWindow
 from typing import Dict, Any
 import time
 from typing import Callable, Optional, Tuple
@@ -19,6 +18,11 @@ log = Logger("client", "window", "im")
 RIM_SERVER=os.getenv("RIM_SERVER")
 
 WIN32: bool = sys.platform.startswith("win")
+
+im_windows = set()
+spot_location_seq = 0
+pending_spot_location = None
+spot_subscription_started = False
 
 
 class IMEnhancedWindow(GtkStubWindow):
@@ -36,51 +40,152 @@ class IMEnhancedWindow(GtkStubWindow):
         if WIN32:
             self.im_context.set_use_preedit(False)
         self.im_setup = False
-        self.when_realized("init-focus", self._setup_im)
+        self._im_client_window = None
+        self.when_realized("init-focus-im", self._setup_im)
+
+    # def init_widget_events(self, widget) -> None:
+    #     def press(_w, _event) -> bool:
+    #         self.im_context.set_client_window(self.get_window())
+    #         self.im_context.focus_in()
+    #         if log.is_debug_enabled():
+    #             log(f"[IM-SPOT] button-press: wid={getattr(self, 'wid', None)} active={self.is_active()} client_window={window} {self._focus_debug_state()}")
+    #         return False
+    #
+    #     widget.connect("button-press-event", press)
 
     def _on_im_retrieve_surrounding(self, im_context):
         #log.info(f"on im retrieve surrounding")
         # TODO: set surronding
         pass
-    def _on_im_delete_surrounding(self, im_context, offfset, n_chars):
+    def _on_im_delete_surrounding(self, im_context, offset, n_chars):
         log.info(f"on im delete surrounding OFFSET:{offset} N_CHARS:{n_chars}")
         # TODO: set surronding
         pass
 
-    def _setup_im(self):
-        def _update_spot_location(x: Optional[int], y: Optional[int], error: Optional[Exception]) -> None:
-            if error:
-                print(f"Error: 错误：{str(error)}")
+    def _focus_debug_state(self) -> str:
+        values = []
+        for name in ("has_focus", "is_focus", "has_toplevel_focus", "is_active"):
+            fn = getattr(self, name, None)
+            if callable(fn):
+                try:
+                    value = fn()
+                except Exception as e:
+                    value = f"ERR:{e!r}"
             else:
-                if not self.has_focus or not self.get_window():
-                    return
+                value = None
+            values.append(f"{name}={value}")
+        return " ".join(values)
 
-                if x == 0 and y == 0:
-                    return
+    def _apply_spot_location(self, spot_id: int, x: int, y: int) -> bool:
+        has_focus = bool(self.is_active())
+        has_window = bool(self.get_window())
+        if log.is_debug_enabled():
+            log(f"[IM-SPOT #{spot_id}] apply begin: raw=({x},{y}) wid={getattr(self, 'wid', None)} focus={has_focus} window={has_window} {self._focus_debug_state()}")
+        if not has_focus or not has_window:
+            if log.is_debug_enabled():
+                log(f"[IM-SPOT #{spot_id}] apply skip: focus={has_focus} window={has_window}")
+            return False
 
-                geo = self.get_window().get_geometry()
-                _x = x * self._xscale  - geo.x
-                _y = y * self._yscale -  geo.y
-                if WIN32:
-                    _x -= geo.x
-                    _y -= geo.y
-                # 构造默认光标矩形（输入法只需要存在，不需要精准位置）
-                cursor_rect = Gdk.Rectangle()
-                cursor_rect.x = _x
-                cursor_rect.y = _y
-                cursor_rect.width = 1
-                cursor_rect.height = 20
-                #print(f"更新坐标: x:{x} y:{y}  --(s:{self._xscale})--> x:{_x} y:{_y}")
-                self.im_context.set_cursor_location(cursor_rect)
+        if x == 0 and y == 0:
+            if log.is_debug_enabled():
+                log(f"[IM-SPOT #{spot_id}] apply skip: zero spot")
+            return False
+
+        window = self.get_window()
+        origin_x, origin_y = window.get_origin()[-2:]
+        _x = round(x * self._xscale - origin_x)
+        _y = round(y * self._yscale - origin_y)
+        # 构造默认光标矩形（输入法只需要存在，不需要精准位置）
+        cursor_rect = Gdk.Rectangle()
+        cursor_rect.x = _x
+        cursor_rect.y = _y
+        cursor_rect.width = 1
+        cursor_rect.height = 20
+        if log.is_debug_enabled():
+            log(f"[IM-SPOT #{spot_id}] apply before set_cursor_location: raw=({x},{y}) wid={getattr(self, 'wid', None)} scale=({self._xscale},{self._yscale}) origin=({origin_x},{origin_y}) local=({_x},{_y}) client_window={window}")
+        try:
+            self.im_context.set_cursor_location(cursor_rect)
+        except Exception as e:
+            log.warn("Warning: failed to set IM cursor location: %s", e)
+            return False
+        if log.is_debug_enabled():
+            log(f"[IM-SPOT #{spot_id}] apply after set_cursor_location")
+        return False
+
+    def _setup_im(self):
+        global spot_subscription_started
+
+        def _apply_spot_location() -> bool:
+            global pending_spot_location
+            if log.is_debug_enabled():
+                for candidate in tuple(im_windows):
+                    log(f"[IM-SPOT] candidate: wid={getattr(candidate, 'wid', None)} window={bool(candidate.get_window())} {candidate._focus_debug_state()}")
+            for window in tuple(im_windows):
+                if window.is_active() and window.get_window():
+                    spot_location = pending_spot_location
+                    pending_spot_location = None
+                    if spot_location is None:
+                        if log.is_debug_enabled():
+                            log("[IM-SPOT] apply skip: no pending spot")
+                        return False
+                    spot_id, x, y = spot_location
+                    return window._apply_spot_location(spot_id, x, y)
+            if log.is_debug_enabled():
+                log("[IM-SPOT] apply skip: no active window")
+            return False
+
+        def _update_spot_location(x: Optional[int], y: Optional[int], error: Optional[Exception]) -> None:
+            global spot_location_seq, pending_spot_location
+
+            if error:
+                log.error("错误：%s", error)
+            else:
+                spot_location_seq += 1
+                spot_id = spot_location_seq
+                pending_spot_location = (spot_id, x, y)
+                if log.is_debug_enabled():
+                    log(f"[IM-SPOT #{spot_id}] receive: raw=({x},{y})")
+                source_id = GLib.idle_add(_apply_spot_location, priority=GLib.PRIORITY_HIGH_IDLE-101)
+                if log.is_debug_enabled():
+                    log(f"[IM-SPOT #{spot_id}] scheduled idle: source={source_id}")
 
         if not self.im_setup:
-            self.im_context.set_client_window(self.get_window())
-            self.im_context.focus_in()
-            self.im_context.reset()
+            # not all Windows need IME, for example WeChat' sticker recommend windows (auto pop-up but not focused)
+            # window = self.get_window()
+            # if window and window is not self._im_client_window:
+            #     self.im_context.set_client_window(window)
+            #     self._im_client_window = window
+            # self.im_context.focus_in()
+            # if log.is_debug_enabled():
+            #     log(f"[IM-SPOT] setup: wid={getattr(self, 'wid', None)} active={self.is_active()} client_window={window} {self._focus_debug_state()}")
+            # self.im_context.reset()
             self.im_setup = True
+            im_windows.add(self)
+            self.connect("focus-in-event", self._on_im_focus_in)
+            self.connect("focus-out-event", self._on_im_focus_out)
             xid = self._metadata.get("xid")
-            # TODO: 这里只需要订阅一个全局坐标变化即可，不需要每个窗口都单独订阅一份
-            subscribe_spots(url = f"{RIM_SERVER}/im/cursor_events?xid={xid}", callback= _update_spot_location)
+            if not spot_subscription_started:
+                spot_subscription_started = True
+                subscribe_spots(url = f"{RIM_SERVER}/im/cursor_events?xid={xid}", callback= _update_spot_location)
+
+    def _on_im_focus_in(self, _window, _event) -> None:
+        window = self.get_window()
+        if window and window is not self._im_client_window:
+            self.im_context.set_client_window(window)
+            self._im_client_window = window
+        self.im_context.focus_in()
+        self.im_context.reset()
+        if log.is_debug_enabled():
+            log(f"[IM-SPOT] focus-in: wid={getattr(self, 'wid', None)} active={self.is_active()} client_window={window} {self._focus_debug_state()}")
+
+    def _on_im_focus_out(self, _window, _event) -> None:
+        self.im_context.focus_out()
+        if log.is_debug_enabled():
+            log(f"[IM-SPOT] focus-out: wid={getattr(self, 'wid', None)} active={self.is_active()} window={bool(self.get_window())}")
+
+    def cleanup(self) -> None:
+        im_windows.discard(self)
+        self._im_client_window = None
 
     def _handle_im_events(self, _win, event) -> bool:
         return self.im_context.filter_keypress(event)
@@ -94,8 +199,7 @@ class IMEnhancedWindow(GtkStubWindow):
         pass
 
     def _on_im_preedit_changed(self, im_context):
-        tstr = im_context.get_preedit_string()
-        #log.info(f"predit change to: {tstr}")
+        im_context.get_preedit_string()
 
 
     def _on_im_commit(self, im_context, text):
@@ -107,7 +211,7 @@ class IMEnhancedWindow(GtkStubWindow):
             params = {
                 "text": text,
                 "xid": self._metadata.get("xid"),
-        })
+            })
 
         #log.info(f"IM提交文本：{text}")
         # if self._client and hasattr(self._window, 'wid') and self._window.wid:
@@ -115,7 +219,6 @@ class IMEnhancedWindow(GtkStubWindow):
 
 
 from threading import Thread
-import threading
 
 def subscribe_spots(url: str, callback: Callable[[Optional[int], Optional[int], Optional[Exception]], None]) -> Thread:
     """
@@ -177,25 +280,25 @@ def subscribe_spots(url: str, callback: Callable[[Optional[int], Optional[int], 
                         callback(x, y, None)
 
             except requests.exceptions.RequestException as e:
-                err = requests.exceptions.RequestException(f"Error: 网络连接异常: {str(e)}")
+                err = requests.exceptions.RequestException(f"网络连接异常: {str(e)}")
                 callback(None, None, err)
                 if running:
-                    print("[后台线程] 5 秒后尝试重连...")
+                    log.warn("后台线程 5 秒后尝试重连...")
                     time.sleep(5)
             except KeyboardInterrupt:
                 break
             except Exception as e:
-                err = Exception(f"Error: 未知错误: {str(e)}")
+                err = Exception(f"未知错误: {str(e)}")
                 callback(None, None, err)
                 if running:
-                    print("[后台线程] 5 秒后尝试重连...")
+                    log.warn("后台线程 5 秒后尝试重连...")
                     time.sleep(5)
             finally:
                 if response is not None:
                     response.close()
-                    print("[后台线程] 已关闭当前连接")
+                    log.warn("后台线程已关闭当前连接")
 
-        print("[后台线程] 订阅已停止")
+        log.warn("后台线程订阅已停止")
 
     # 创建并启动后台线程（守护线程，主线程退出时自动结束）
     thread = Thread(target=_background_task, daemon=True)
