@@ -20,8 +20,10 @@ RIM_SERVER=os.getenv("RIM_SERVER")
 WIN32: bool = sys.platform.startswith("win")
 
 im_windows = set()
+current_im_window = None
 spot_location_seq = 0
 pending_spot_location = None
+latest_spot_location = None
 spot_subscription_started = False
 
 
@@ -40,7 +42,8 @@ class IMEnhancedWindow(GtkStubWindow):
         if WIN32:
             self.im_context.set_use_preedit(False)
         self.im_setup = False
-        self._im_client_window = None
+        self._im_is_transient_utility_window = False
+        self._im_transient_window = None
         self.when_realized("init-focus-im", self._setup_im)
 
     # def init_widget_events(self, widget) -> None:
@@ -76,41 +79,99 @@ class IMEnhancedWindow(GtkStubWindow):
             values.append(f"{name}={value}")
         return " ".join(values)
 
+    def _cache_transient_for_window(self) -> None:
+        self._im_transient_window = None
+        window_types = self._metadata.get("window-type", ())
+        self._im_is_transient_utility_window = bool(self._metadata.get("transient-for")) and "UTILITY" in window_types
+        if not self._im_is_transient_utility_window:
+            return
+        self._im_transient_window = self._client.find_window(self._metadata, "transient-for")
+        if log.is_debug_enabled():
+            log(f"[IM-SPOT] cache transient window: wid={getattr(self, 'wid', None)} transient_for={self._metadata.get('transient-for')} transient_window={self._im_transient_window}")
+
     def _apply_spot_location(self, spot_id: int, x: int, y: int) -> bool:
-        has_focus = bool(self.is_active())
-        has_window = bool(self.get_window())
-        if log.is_debug_enabled():
-            log(f"[IM-SPOT #{spot_id}] apply begin: raw=({x},{y}) wid={getattr(self, 'wid', None)} focus={has_focus} window={has_window} {self._focus_debug_state()}")
-        if not has_focus or not has_window:
-            if log.is_debug_enabled():
-                log(f"[IM-SPOT #{spot_id}] apply skip: focus={has_focus} window={has_window}")
-            return False
-
-        if x == 0 and y == 0:
-            if log.is_debug_enabled():
-                log(f"[IM-SPOT #{spot_id}] apply skip: zero spot")
-            return False
-
-        window = self.get_window()
-        origin_x, origin_y = window.get_origin()[-2:]
-        _x = round(x * self._xscale - origin_x)
-        _y = round(y * self._yscale - origin_y)
-        # 构造默认光标矩形（输入法只需要存在，不需要精准位置）
-        cursor_rect = Gdk.Rectangle()
-        cursor_rect.x = _x
-        cursor_rect.y = _y
-        cursor_rect.width = 1
-        cursor_rect.height = 20
-        if log.is_debug_enabled():
-            log(f"[IM-SPOT #{spot_id}] apply before set_cursor_location: raw=({x},{y}) wid={getattr(self, 'wid', None)} scale=({self._xscale},{self._yscale}) origin=({origin_x},{origin_y}) local=({_x},{_y}) client_window={window}")
         try:
-            self.im_context.set_cursor_location(cursor_rect)
-        except Exception as e:
-            log.warn("Warning: failed to set IM cursor location: %s", e)
+            has_focus = bool(self.is_active())
+            window = self.get_window()
+            has_window = bool(window)
+            if log.is_debug_enabled():
+                log(f"[IM-SPOT #{spot_id}] apply begin: raw=({x},{y}) wid={getattr(self, 'wid', None)} focus={has_focus} window={has_window} {self._focus_debug_state()}")
+            if not has_focus or not has_window:
+                if log.is_debug_enabled():
+                    log(f"[IM-SPOT #{spot_id}] apply skip: focus={has_focus} window={has_window}")
+                return False
+
+            if x == 0 and y == 0:
+                if log.is_debug_enabled():
+                    log(f"[IM-SPOT #{spot_id}] apply skip: zero spot")
+                return False
+
+            cursor_height = 20
+            scaled_global_x = round(x * self._xscale)
+            scaled_global_y = round(y * self._yscale)
+            origin_x, origin_y = window.get_origin()[-2:]
+            origin_source = "self"
+            _x = scaled_global_x - origin_x
+            _y = scaled_global_y - origin_y
+            if self._im_is_transient_utility_window:
+                # workaround: 部分环境（目前发现 Windows）下部分子窗口也会获得输入焦点，服务端坐标还在父窗口，需要拟合到子窗口最近位置然后给出
+                transient_window = self._im_transient_window
+                transient_gdk_window = transient_window.get_window() if transient_window else None
+                parent_origin = None
+                if transient_gdk_window:
+                    parent_origin = transient_gdk_window.get_origin()[-2:]
+                geometry = window.get_geometry()
+                width = max(1, int(geometry.width))
+                height = max(1, int(geometry.height))
+                nearest_global_x = min(max(scaled_global_x, origin_x), origin_x + width - 1)
+                nearest_global_y = min(max(scaled_global_y, origin_y), origin_y + max(0, height - cursor_height))
+                _x = nearest_global_x - origin_x
+                _y = nearest_global_y - origin_y
+                origin_source = "self-fit"
+                if log.is_debug_enabled():
+                    relative_to_parent = None
+                    if parent_origin is not None:
+                        relative_to_parent = (origin_x - parent_origin[0], origin_y - parent_origin[1])
+                    log(f"[IM-SPOT #{spot_id}] transient utility fit: wid={getattr(self, 'wid', None)} transient_for={self._metadata.get('transient-for')} transient_window={transient_window} transient_gdk_window={transient_gdk_window} raw=({x},{y}) scaled_global=({scaled_global_x},{scaled_global_y}) parent_origin={parent_origin} transient_origin=({origin_x},{origin_y}) transient_size=({width},{height}) transient_in_parent={relative_to_parent} nearest_global=({nearest_global_x},{nearest_global_y}) local=({_x},{_y}) origin_source={origin_source}")
+            if log.is_debug_enabled():
+                try:
+                    position = self.get_position()
+                except Exception as e:
+                    position = f"ERR:{e!r}"
+                try:
+                    root_origin = window.get_root_origin()
+                except Exception as e:
+                    root_origin = f"ERR:{e!r}"
+                try:
+                    geometry = window.get_geometry()
+                except Exception as e:
+                    geometry = f"ERR:{e!r}"
+                log(f"[IM-SPOT #{spot_id}] geometry values: origin_source={origin_source} origin=({origin_x},{origin_y}) get_position={position} get_root_origin={root_origin} get_geometry={geometry}")
+            if WIN32:
+                if WIN32:
+                    _x -= origin_x
+                    _y -= origin_y
+                if log.is_debug_enabled():
+                    log(f"[IM-SPOT #{spot_id}] win32 monitor adjust")
+            # 构造默认光标矩形（输入法只需要存在，不需要精准位置）
+            cursor_rect = Gdk.Rectangle()
+            cursor_rect.x = _x
+            cursor_rect.y = _y
+            cursor_rect.width = 1
+            cursor_rect.height = cursor_height
+            if log.is_debug_enabled():
+                log(f"[IM-SPOT #{spot_id}] apply before set_cursor_location: raw=({x},{y}) wid={getattr(self, 'wid', None)} scale=({self._xscale},{self._yscale}) origin=({origin_x},{origin_y}) local=({_x},{_y}) client_window={window}")
+            try:
+                self.im_context.set_cursor_location(cursor_rect)
+            except Exception as e:
+                log.warn("Warning: failed to set IM cursor location: %s", e)
+                return False
+            if log.is_debug_enabled():
+                log(f"[IM-SPOT #{spot_id}] apply after set_cursor_location")
             return False
-        if log.is_debug_enabled():
-            log(f"[IM-SPOT #{spot_id}] apply after set_cursor_location")
-        return False
+        except Exception as e:
+            log.warn("[IM-SPOT #%s] apply failed: %s", spot_id, e, exc_info=True)
+            return False
 
     def _setup_im(self):
         global spot_subscription_started
@@ -120,22 +181,30 @@ class IMEnhancedWindow(GtkStubWindow):
             if log.is_debug_enabled():
                 for candidate in tuple(im_windows):
                     log(f"[IM-SPOT] candidate: wid={getattr(candidate, 'wid', None)} window={bool(candidate.get_window())} {candidate._focus_debug_state()}")
-            for window in tuple(im_windows):
-                if window.is_active() and window.get_window():
-                    spot_location = pending_spot_location
-                    pending_spot_location = None
-                    if spot_location is None:
-                        if log.is_debug_enabled():
-                            log("[IM-SPOT] apply skip: no pending spot")
-                        return False
-                    spot_id, x, y = spot_location
-                    return window._apply_spot_location(spot_id, x, y)
+
+            window = current_im_window
+            if window is None:
+                if log.is_debug_enabled():
+                    log("[IM-SPOT] apply skip: no current IM window")
+                return False
+            if not window.get_window():
+                if log.is_debug_enabled():
+                    log(f"[IM-SPOT] apply skip: current window unrealized wid={getattr(window, 'wid', None)}")
+                return False
+
+            spot_location = pending_spot_location
+            pending_spot_location = None
+            if spot_location is None:
+                if log.is_debug_enabled():
+                    log("[IM-SPOT] apply skip: no pending spot")
+                return False
+            spot_id, x, y = spot_location
             if log.is_debug_enabled():
-                log("[IM-SPOT] apply skip: no active window")
-            return False
+                log(f"[IM-SPOT] current window: wid={getattr(window, 'wid', None)}")
+            return window._apply_spot_location(spot_id, x, y)
 
         def _update_spot_location(x: Optional[int], y: Optional[int], error: Optional[Exception]) -> None:
-            global spot_location_seq, pending_spot_location
+            global spot_location_seq, pending_spot_location, latest_spot_location
 
             if error:
                 log.error("错误：%s", error)
@@ -143,6 +212,7 @@ class IMEnhancedWindow(GtkStubWindow):
                 spot_location_seq += 1
                 spot_id = spot_location_seq
                 pending_spot_location = (spot_id, x, y)
+                latest_spot_location = pending_spot_location
                 if log.is_debug_enabled():
                     log(f"[IM-SPOT #{spot_id}] receive: raw=({x},{y})")
                 source_id = GLib.idle_add(_apply_spot_location, priority=GLib.PRIORITY_HIGH_IDLE-101)
@@ -150,16 +220,8 @@ class IMEnhancedWindow(GtkStubWindow):
                     log(f"[IM-SPOT #{spot_id}] scheduled idle: source={source_id}")
 
         if not self.im_setup:
-            # not all Windows need IME, for example WeChat' sticker recommend windows (auto pop-up but not focused)
-            # window = self.get_window()
-            # if window and window is not self._im_client_window:
-            #     self.im_context.set_client_window(window)
-            #     self._im_client_window = window
-            # self.im_context.focus_in()
-            # if log.is_debug_enabled():
-            #     log(f"[IM-SPOT] setup: wid={getattr(self, 'wid', None)} active={self.is_active()} client_window={window} {self._focus_debug_state()}")
-            # self.im_context.reset()
             self.im_setup = True
+            self._cache_transient_for_window()
             im_windows.add(self)
             self.connect("focus-in-event", self._on_im_focus_in)
             self.connect("focus-out-event", self._on_im_focus_out)
@@ -169,14 +231,31 @@ class IMEnhancedWindow(GtkStubWindow):
                 subscribe_spots(url = f"{RIM_SERVER}/im/cursor_events?xid={xid}", callback= _update_spot_location)
 
     def _on_im_focus_in(self, _window, _event) -> None:
-        window = self.get_window()
-        if window and window is not self._im_client_window:
-            self.im_context.set_client_window(window)
-            self._im_client_window = window
-        self.im_context.focus_in()
-        self.im_context.reset()
-        if log.is_debug_enabled():
-            log(f"[IM-SPOT] focus-in: wid={getattr(self, 'wid', None)} active={self.is_active()} client_window={window} {self._focus_debug_state()}")
+        global current_im_window
+        try:
+            window = self.get_window()
+            current_im_window = self
+            if window:
+                self.im_context.set_client_window(window)
+            elif log.is_debug_enabled():
+                log(f"[IM-SPOT] focus-in set_client_window skip: no client window wid={getattr(self, 'wid', None)}")
+            self.im_context.focus_in()
+            if latest_spot_location is not None:
+                spot_id, x, y = latest_spot_location
+                source_id = GLib.idle_add(self._apply_spot_location, spot_id, x, y, priority=GLib.PRIORITY_HIGH_IDLE-101)
+                if log.is_debug_enabled():
+                    log(f"[IM-SPOT #{spot_id}] focus-in scheduled latest spot: wid={getattr(self, 'wid', None)} source={source_id} raw=({x},{y})")
+            # if not self._im_is_transient_utility_window:
+            #     self.im_context.reset()
+            # elif log.is_debug_enabled():
+            #     log(f"[IM-SPOT] focus-in im_context.reset skip")
+            if log.is_debug_enabled():
+                log(f"[IM-SPOT] focus-in: wid={getattr(self, 'wid', None)} active={self.is_active()} client_window={window} {self._focus_debug_state()}")
+                if self._im_is_transient_utility_window:
+                    log(f"[IM-SPOT] focus-in transient utility: wid={getattr(self, 'wid', None)} transient_for={self._metadata.get('transient-for')} window_type={self._metadata.get('window-type')} active={self.is_active()} client_window={window} {self._focus_debug_state()}")
+        except Exception as e:
+            log.warn("[IM-SPOT] _on_im_focus_in failed", e, exc_info=True)
+            return False
 
     def _on_im_focus_out(self, _window, _event) -> None:
         self.im_context.focus_out()
@@ -184,8 +263,11 @@ class IMEnhancedWindow(GtkStubWindow):
             log(f"[IM-SPOT] focus-out: wid={getattr(self, 'wid', None)} active={self.is_active()} window={bool(self.get_window())}")
 
     def cleanup(self) -> None:
+        global current_im_window
+        if current_im_window is self:
+            current_im_window = None
         im_windows.discard(self)
-        self._im_client_window = None
+        self._im_transient_window = None
 
     def _handle_im_events(self, _win, event) -> bool:
         return self.im_context.filter_keypress(event)
