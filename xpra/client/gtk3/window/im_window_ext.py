@@ -101,15 +101,37 @@ class IMEnhancedWindow(GtkStubWindow):
                     log(f"[IM-SPOT #{spot_id}] apply skip: focus={has_focus} window={has_window}")
                 return False
 
-            if x == 0 and y == 0:
-                if log.is_debug_enabled():
-                    log(f"[IM-SPOT #{spot_id}] apply skip: zero spot")
-                return False
-
             cursor_height = 20
+            origin_x, origin_y = window.get_origin()[-2:]
+            geometry = window.get_geometry()
+            width = max(1, int(geometry.width))
+            height = max(1, int(geometry.height))
+            if x == 0 and y == 0:
+                # workaround: 如果收到服务端 (0,0) 坐标，判断其是否在当前窗口内，是则重新应用，否则转换到窗口左上角应用（缓解显示到另一显示器左上角的情况）
+                fallback_x = origin_x / self._xscale
+                fallback_y = origin_y / self._yscale
+                latest_in_window = False
+                if latest_spot_location is not None:
+                    latest_spot_id, latest_x, latest_y = latest_spot_location
+                    latest_global_x = round(latest_x * self._xscale)
+                    latest_global_y = round(latest_y * self._yscale)
+                    latest_in_window = (
+                            origin_x <= latest_global_x < origin_x + width
+                            and origin_y <= latest_global_y < origin_y + height
+                    )
+                    if latest_in_window:
+                        spot_id, x, y = latest_spot_id, latest_x, latest_y
+                    else:
+                        x, y = fallback_x, fallback_y
+                    if log.is_debug_enabled():
+                        log(f"[IM-SPOT #{spot_id}] zero spot replace: latest=({latest_x},{latest_y}) latest_global=({latest_global_x},{latest_global_y}) latest_in_window={latest_in_window} fallback=({fallback_x},{fallback_y}) using=({x},{y}) window_origin=({origin_x},{origin_y}) window_size=({width},{height})")
+                else:
+                    x, y = fallback_x, fallback_y
+                    if log.is_debug_enabled():
+                        log(f"[IM-SPOT #{spot_id}] zero spot replace: no latest spot fallback=({fallback_x},{fallback_y}) window_origin=({origin_x},{origin_y}) window_size=({width},{height})")
+
             scaled_global_x = round(x * self._xscale)
             scaled_global_y = round(y * self._yscale)
-            origin_x, origin_y = window.get_origin()[-2:]
             origin_source = "self"
             _x = scaled_global_x - origin_x
             _y = scaled_global_y - origin_y
@@ -120,9 +142,6 @@ class IMEnhancedWindow(GtkStubWindow):
                 parent_origin = None
                 if transient_gdk_window:
                     parent_origin = transient_gdk_window.get_origin()[-2:]
-                geometry = window.get_geometry()
-                width = max(1, int(geometry.width))
-                height = max(1, int(geometry.height))
                 nearest_global_x = min(max(scaled_global_x, origin_x), origin_x + width - 1)
                 nearest_global_y = min(max(scaled_global_y, origin_y), origin_y + max(0, height - cursor_height))
                 _x = nearest_global_x - origin_x
@@ -212,7 +231,8 @@ class IMEnhancedWindow(GtkStubWindow):
                 spot_location_seq += 1
                 spot_id = spot_location_seq
                 pending_spot_location = (spot_id, x, y)
-                latest_spot_location = pending_spot_location
+                if x != 0 or y != 0:
+                    latest_spot_location = pending_spot_location
                 if log.is_debug_enabled():
                     log(f"[IM-SPOT #{spot_id}] receive: raw=({x},{y})")
                 source_id = GLib.idle_add(_apply_spot_location, priority=GLib.PRIORITY_HIGH_IDLE-101)
@@ -245,6 +265,7 @@ class IMEnhancedWindow(GtkStubWindow):
                 source_id = GLib.idle_add(self._apply_spot_location, spot_id, x, y, priority=GLib.PRIORITY_HIGH_IDLE-101)
                 if log.is_debug_enabled():
                     log(f"[IM-SPOT #{spot_id}] focus-in scheduled latest spot: wid={getattr(self, 'wid', None)} source={source_id} raw=({x},{y})")
+            # 还是通通不 reset，这样在微信推荐表情弹窗来回切换不会丢失输入
             # if not self._im_is_transient_utility_window:
             #     self.im_context.reset()
             # elif log.is_debug_enabled():
