@@ -1133,7 +1133,8 @@ class GTKClientWindowBase(ClientWindowBase, Gtk.Window):
                 if OSX and direction == MoveResize.MOVE and button == 1:
                     try:
                         from xpra.platform.darwin.gdk3_bindings import perform_window_drag_with_remembered_event
-                        native_move_drag = perform_window_drag_with_remembered_event(self.get_window(), 3.0)
+                        max_age = getattr(self._client, "catlink_window_drag_remembered_event_max_age", 3.0)
+                        native_move_drag = perform_window_drag_with_remembered_event(self.get_window(), max_age)
                     except ImportError:
                         pass
                     except Exception:

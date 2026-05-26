@@ -273,6 +273,7 @@ class WindowClient(StubClientMixin):
 
         self.window_close_action: str = "forward"
         self.modal_windows: bool = True
+        self.catlink_window_drag_remembered_event_max_age: float = 3.0
 
         self._pid_to_signalwatcher = {}
         self._signalwatcher_to_wids = {}
@@ -311,6 +312,10 @@ class WindowClient(StubClientMixin):
             self.pixel_depth = 0
 
         self.windows_enabled = opts.windows
+        self.catlink_window_drag_remembered_event_max_age = max(
+            0.0,
+            float(getattr(opts, "catlink_window_drag_remembered_event_max_age", 3.0) or 3.0),
+        )
         if self.windows_enabled:
             if opts.window_close not in ("forward", "ignore", "disconnect", "shutdown", "auto"):
                 self.window_close_action = "forward"
