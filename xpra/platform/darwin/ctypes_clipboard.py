@@ -4,6 +4,7 @@
 # later version. See the file COPYING for details.
 
 from io import BytesIO
+from time import monotonic
 from collections.abc import Sequence
 
 from AppKit import (
@@ -127,31 +128,42 @@ class OSXClipboardProxy(ClipboardProxyCore):
         return targets
 
     def get_contents(self, target: str, got_contents: ClipboardCallback) -> None:
-        log("get_contents%s", (target, got_contents))
+        request_started = monotonic()
+        log("get_contents%s started", (target, got_contents))
+
+        def finish(dtype: str, dformat: int, data) -> None:
+            elapsed = int((monotonic() - request_started) * 1000)
+            log("get_contents(%s) finish dtype=%s, format=%s, size=%s, elapsed=%ims",
+                target, dtype, dformat, len(data or ""), elapsed)
+            got_contents(dtype, dformat, data)
+
         if target == "TARGETS":
-            got_contents("ATOM", 32, self.get_targets())
+            finish("ATOM", 32, self.get_targets())
             return
         if target in URI_TARGETS:
-            got_contents(target, 8, self.get_uri_list())
+            finish(target, 8, self.get_uri_list())
             return
         if target in IMAGE_FORMATS:
             try:
                 data = self.get_image_contents(target)
                 if data:
-                    got_contents(target, 8, data)
+                    finish(target, 8, data)
                     return
             except Exception:
-                log.error("Error: failed to copy image from clipboard", exc_info=True)
+                elapsed = int((monotonic() - request_started) * 1000)
+                log.error("Error: failed to copy image from clipboard after %ims", elapsed, exc_info=True)
         if target in ("TEXT", "STRING", "text/plain", "text/plain;charset=utf-8", "UTF8_STRING"):
             text = self.get_clipboard_text()
-            got_contents(target, 8, text)
+            finish(target, 8, text)
             return
         # we don't know how to handle this target,
         # return an empty response:
-        got_contents(target, 8, b"")
+        finish(target, 8, b"")
 
     def get_image_contents(self, target):
+        started = monotonic()
         types = filter_targets(self.pasteboard.types())
+        log("get_image_contents(%s) pasteboard types=%s", target, types)
         if target == "image/png" and NSPasteboardTypePNG in types:
             src_dtype = target
             img_data = self.pasteboard.dataForType_(NSPasteboardTypePNG)
@@ -168,11 +180,21 @@ class OSXClipboardProxy(ClipboardProxyCore):
             log("image target '%s' not found in %s", target, types)
             return None
         if not img_data:
+            elapsed = int((monotonic() - started) * 1000)
+            log("get_image_contents(%s) no data for source=%s after %ims", target, src_dtype, elapsed)
             return None
+        data_ready = monotonic()
         length = CFDataGetLength(img_data)
+        log("get_image_contents(%s) source=%s cfdata length=%s, fetch elapsed=%ims",
+            target, src_dtype, length, int((data_ready - started) * 1000))
         img_data = CFDataGetBytes(img_data, (0, length), None)
+        bytes_ready = monotonic()
+        log("get_image_contents(%s) copied %s bytes from pasteboard in %ims",
+            target, len(img_data or b""), int((bytes_ready - data_ready) * 1000))
         img_data = filter_data(dtype=src_dtype, dformat=8, data=img_data, trusted=False, output_dtype=target)
-        log("get_image_contents(%s)=%i %s", target, len(img_data or ()), type(img_data))
+        log("get_image_contents(%s)=%i %s, convert elapsed=%ims, total elapsed=%ims",
+            target, len(img_data or ()), type(img_data),
+            int((monotonic() - bytes_ready) * 1000), int((monotonic() - started) * 1000))
         return img_data
 
     def got_token(self, targets, target_data=None, claim=True, _synchronous_client=False) -> None:
