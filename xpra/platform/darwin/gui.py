@@ -83,6 +83,12 @@ def do_ready() -> None:
     if osxapp:
         log("%s()", osxapp.ready)
         osxapp.ready()
+        if os.environ.get("CATLINK_HIDE_DOCK", "1").lower() not in ("0", "false", "no", "off"):
+            try:
+                # Keep catlink hidden from the macOS Dock after gtkosx_application finalizes.
+                NSApp.setActivationPolicy_(1)
+            except Exception:
+                log("failed to hide Dock icon", exc_info=True)
 
 
 def get_backends() -> list[type]:
