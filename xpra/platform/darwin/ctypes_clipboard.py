@@ -78,19 +78,21 @@ class OSXClipboardProxy(ClipboardProxyCore):
 
     def do_emit_token(self) -> None:
         packet_data: list[str | int | list[str]] = []
-        if self._want_targets:
-            targets = self.get_targets()
-            log("do_emit_token() targets=%s", targets)
-            packet_data.append(targets)
-            if self._greedy_client and "TEXT" in targets:
-                text = self.get_clipboard_text()
-                if text:
-                    packet_data += ["STRING", "bytes", 8, text]
+        targets = self.get_targets()
+        log("do_emit_token() targets=%s", targets)
+        packet_data.append(targets)
+        if self._greedy_client and "TEXT" in targets:
+            text = self.get_clipboard_text()
+            if text:
+                text_target = next((t for t in TEXT_TARGETS if t in targets), "UTF8_STRING")
+                packet_data.append((text_target, "UTF8_STRING", 8, text))
         self.send_clipboard_token_handler(self, tuple(packet_data))
 
-    def get_clipboard_text(self) -> str:
+    def get_clipboard_text(self) -> str | None:
         text = self.pasteboard.stringForType_(NSStringPboardType)
         log("get_clipboard_text() NSStringPboardType='%s' (%s)", text, type(text))
+        if text is None:
+            return None
         return str(text)
 
     def get_file_urls(self) -> list:
@@ -141,7 +143,11 @@ class OSXClipboardProxy(ClipboardProxyCore):
             finish("ATOM", 32, self.get_targets())
             return
         if target in URI_TARGETS:
-            finish(target, 8, self.get_uri_list())
+            uri_list = self.get_uri_list()
+            if uri_list:
+                finish(target, 8, uri_list)
+            else:
+                got_contents("", 0, None)
             return
         if target in IMAGE_FORMATS:
             try:
@@ -152,13 +158,17 @@ class OSXClipboardProxy(ClipboardProxyCore):
             except Exception:
                 elapsed = int((monotonic() - request_started) * 1000)
                 log.error("Error: failed to copy image from clipboard after %ims", elapsed, exc_info=True)
+            got_contents("", 0, None)
+            return
         if target in ("TEXT", "STRING", "text/plain", "text/plain;charset=utf-8", "UTF8_STRING"):
             text = self.get_clipboard_text()
-            finish(target, 8, text)
+            if text is None:
+                got_contents("", 0, None)
+            else:
+                finish(target, 8, text)
             return
-        # we don't know how to handle this target,
-        # return an empty response:
-        finish(target, 8, b"")
+        # we don't know how to handle this target:
+        got_contents("", 0, None)
 
     def get_image_contents(self, target):
         started = monotonic()
@@ -284,7 +294,9 @@ class OSXClipboardProxy(ClipboardProxyCore):
 
     def local_clipboard_changed(self) -> None:
         log("local_clipboard_changed()")
-        self.do_owner_changed()
+        if not self._enabled or not self._can_send or self._block_owner_change:
+            return
+        self.schedule_emit_token()
 
 
 class OSXClipboardProtocolHelper(ClipboardTimeoutHelper):
