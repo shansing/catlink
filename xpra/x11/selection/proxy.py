@@ -343,6 +343,9 @@ class ClipboardProxy(ClipboardProxyCore, GObject.GObject):
             if log.is_debug_enabled():
                 log("setting response %s: %s as '%s' on property '%s' of window %s as %s",
                     type(data), Ellipsizer(data), actual_target, prop, get_wininfo(requestor), dtype)
+            if not dtype or not dformat:
+                self.set_selection_response(requestor, actual_target, prop, dtype, dformat, None, time)
+                continue
             if actual_target != target and dtype == target:
                 dtype = actual_target
             self.set_selection_response(requestor, actual_target, prop, dtype, dformat, data, time)
