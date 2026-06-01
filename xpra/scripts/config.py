@@ -616,6 +616,7 @@ OPTION_TYPES: dict[str, Any] = {
     "keyboard-variant"  : str,
     "keyboard-variants" : list,
     "keyboard-options"  : str,
+    "catlink-temp-go-above": bool,
     "catlink-window-drag-remembered-event-max-age": float,
     "clipboard"         : str,
     "clipboard-direction" : str,
@@ -860,6 +861,7 @@ OPTIONS_COMPAT_NAMES: dict[str, str] = {
 CLIENT_OPTIONS: list[str] = [
     "title", "username", "password", "session-name",
     "dock-icon", "tray-icon", "window-icon",
+    "catlink-temp-go-above",
     "catlink-window-drag-remembered-event-max-age",
     "clipboard", "clipboard-direction", "clipboard-filter-file",
     "remote-clipboard", "local-clipboard",
@@ -1076,6 +1078,7 @@ def get_defaults() -> dict[str, Any]:
         "keyboard-variant"  : "",
         "keyboard-variants" : [],
         "keyboard-options"  : "",
+        "catlink-temp-go-above": False,
         "catlink-window-drag-remembered-event-max-age": 3.0,
         "clipboard"         : "yes",
         "clipboard-direction" : "both",

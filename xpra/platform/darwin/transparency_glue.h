@@ -15,3 +15,4 @@ float getBackingScaleFactor(NSWindow *window);
 void rememberButtonPressEvent(void);
 void clearRememberedButtonPressEvent(void);
 BOOL performWindowDragWithRememberedEvent(NSWindow *window, double maxAge);
+void orderWindowFront(NSWindow *window);

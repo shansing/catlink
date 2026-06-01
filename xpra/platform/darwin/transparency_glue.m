@@ -44,6 +44,22 @@ BOOL performWindowDragWithRememberedEvent(NSWindow *window, double maxAge) {
     return YES;
 }
 
+void orderWindowFront(NSWindow *window) {
+    if (!window) {
+        return;
+    }
+    SEL activateIgnoringOtherAppsSelector = NSSelectorFromString(@"activateIgnoringOtherApps:");
+    if ([NSApp respondsToSelector:activateIgnoringOtherAppsSelector]) {
+        [NSApp activateIgnoringOtherApps:YES];
+    } else {
+        SEL activateSelector = NSSelectorFromString(@"activate");
+        if ([NSApp respondsToSelector:activateSelector]) {
+            [NSApp performSelector:activateSelector];
+        }
+    }
+    [window makeKeyAndOrderFront:nil];
+}
+
 void setOpaque(NSWindow *window, BOOL opaque) {
 	[window setOpaque:opaque];
 }

@@ -5,6 +5,7 @@
 # later version. See the file COPYING for details.
 
 import ctypes
+import os
 from weakref import WeakValueDictionary
 from typing import Any
 from collections.abc import Callable, Sequence

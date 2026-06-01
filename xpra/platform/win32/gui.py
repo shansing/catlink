@@ -14,7 +14,7 @@ from collections.abc import Callable, Sequence
 from ctypes import (
     WinDLL,  # @UnresolvedImport
     CDLL, pythonapi, py_object,
-    HRESULT, c_bool, create_string_buffer, byref, addressof, sizeof,  # @UnresolvedImport
+    HRESULT, c_bool, create_string_buffer, byref, addressof, sizeof, c_int,  # @UnresolvedImport
 )
 from ctypes.wintypes import HWND, DWORD, POINT, RECT, HGDIOBJ, LPCWSTR
 from ctypes.util import find_library
@@ -70,6 +70,22 @@ log("gdkdll=%s", gdkdll)
 
 shell32 = WinDLL("shell32", use_last_error=True)
 dwmapi = WinDLL("dwmapi", use_last_error=True)
+user32 = WinDLL("user32", use_last_error=True)
+BringWindowToTop = user32.BringWindowToTop
+BringWindowToTop.restype = c_bool
+BringWindowToTop.argtypes = [HWND]
+SetActiveWindow = user32.SetActiveWindow
+SetActiveWindow.restype = HWND
+SetActiveWindow.argtypes = [HWND]
+SetForegroundWindow = user32.SetForegroundWindow
+SetForegroundWindow.restype = c_bool
+SetForegroundWindow.argtypes = [HWND]
+SetFocus = user32.SetFocus
+SetFocus.restype = HWND
+SetFocus.argtypes = [HWND]
+ShowWindow = user32.ShowWindow
+ShowWindow.restype = c_bool
+ShowWindow.argtypes = [HWND, c_int]
 
 
 def get_swg() -> Callable:
@@ -198,6 +214,18 @@ def get_window_handle(window) -> int:
     hwnd = gdk_win32_window_get_handle(gpointer)
     # log("get_window_handle(%s) gpointer=%#x, hwnd=%#x", gpointer, hwnd)
     return hwnd
+
+
+def raise_window(window) -> bool:
+    hwnd = get_window_handle(window)
+    if not hwnd:
+        return False
+    ShowWindow(hwnd, win32con.SW_RESTORE)
+    brought = bool(BringWindowToTop(hwnd))
+    active = bool(SetActiveWindow(hwnd))
+    focus = bool(SetFocus(hwnd))
+    foreground = bool(SetForegroundWindow(hwnd))
+    return brought or active or focus or foreground
 
 
 def get_desktop_names() -> Sequence[str]:

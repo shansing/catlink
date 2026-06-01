@@ -30,7 +30,7 @@ from xpra.client.gui.window_border import WindowBorder
 from xpra.util.io import find_libexec_command
 from xpra.util.thread import start_thread
 from xpra.util.str_fn import std, bytestostr, strtobytes, memoryview_to_bytes
-from xpra.os_util import OSX, POSIX, gi_import
+from xpra.os_util import OSX, POSIX, WIN32, gi_import
 from xpra.util.system import is_Ubuntu, is_Wayland
 from xpra.util.objects import typedict, make_instance
 from xpra.util.str_fn import repr_ellipsized
@@ -273,6 +273,9 @@ class WindowClient(StubClientMixin):
 
         self.window_close_action: str = "forward"
         self.modal_windows: bool = True
+        self.catlink_temp_go_above: bool = False
+        self.catlink_temp_go_above_done: bool = False
+        self.catlink_temp_go_above_timer: int = 0
         self.catlink_window_drag_remembered_event_max_age: float = 3.0
 
         self._pid_to_signalwatcher = {}
@@ -316,6 +319,8 @@ class WindowClient(StubClientMixin):
             0.0,
             float(getattr(opts, "catlink_window_drag_remembered_event_max_age", 3.0) or 3.0),
         )
+        self.catlink_temp_go_above = bool(getattr(opts, "catlink_temp_go_above", False))
+        log.info("catlink-temp-go-above=%s", self.catlink_temp_go_above)
         if self.windows_enabled:
             if opts.window_close not in ("forward", "ignore", "disconnect", "shutdown", "auto"):
                 self.window_close_action = "forward"
@@ -991,9 +996,102 @@ class WindowClient(StubClientMixin):
 
     def show_window(self, wid: int, window, metadata, override_redirect: bool) -> None:
         window.show_all()
+        self.catlink_temp_raise_window(wid, window, metadata, override_redirect)
         if override_redirect and self.should_force_grab(metadata):
             grablog.warn("forcing grab for OR window %#x, matches %s", wid, OR_FORCE_GRAB)
             self.window_grab(wid, window)
+
+    def catlink_temp_raise_window(self, wid: int, window, metadata, override_redirect: bool) -> None:
+        enabled = self.catlink_temp_go_above
+        log("catlink temp raise check for window %#x: enabled=%s", wid, enabled)
+        if not enabled:
+            log("catlink temp raise skipped for window %#x: disabled", wid)
+            return
+        if self.catlink_temp_go_above_done:
+            log("catlink temp raise skipped for window %#x: already applied", wid)
+            return
+        if override_redirect:
+            log.info("catlink temp raise skipped for window %#x: override-redirect", wid)
+            return
+        if window.is_tray():
+            log.info("catlink temp raise skipped for window %#x: tray window", wid)
+            return
+        window_types = tuple(x.upper() for x in metadata.strtupleget("window-type"))
+        wm_class = metadata.strtupleget("class-instance", ("", ""), 2, 2)
+        title = metadata.strget("title")
+        log.info(
+            "catlink temp raise candidate window %#x: window-type=%s class=%s title=%r",
+            wid, window_types, wm_class, title,
+        )
+        if "NORMAL" not in window_types:
+            log.info("catlink temp raise skipped for window %#x: window-type=%s", wid, window_types)
+            return
+        if metadata.boolget("above") or getattr(window, "_above", False):
+            log.info("catlink temp raise not needed for window %#x: already above", wid)
+            return
+
+        log.info("catlink temp raise bringing window %#x to front", wid)
+        if not self.catlink_temp_go_above_timer:
+            self.catlink_temp_go_above_timer = GLib.timeout_add(150, self.catlink_raise_window, wid, window, 0)
+
+    def catlink_raise_window(self, wid: int, window, retry: int = 0) -> bool:
+        self.catlink_temp_go_above_timer = 0
+        current_window = self._id_to_window.get(wid)
+        if current_window is not window:
+            return False
+        gdkwindow = window.get_window()
+        if not gdkwindow:
+            if retry < 3:
+                log.info("catlink temp raise waiting for gdk window %#x: retry=%i", wid, retry + 1)
+                self.catlink_temp_go_above_timer = GLib.timeout_add(150, self.catlink_raise_window, wid, window, retry + 1)
+            else:
+                log.info("catlink temp raise cannot raise window %#x: no gdk window", wid)
+            return False
+        if OSX:
+            if self.catlink_raise_macos_window(wid, gdkwindow):
+                self.catlink_temp_go_above_done = True
+            return False
+        if WIN32:
+            if self.catlink_raise_win32_window(wid, window):
+                self.catlink_temp_go_above_done = True
+            return False
+        present = getattr(window, "present", None)
+        if present:
+            log.info("catlink temp raise presenting window %#x", wid)
+            present()
+        else:
+            log.info("catlink temp raise cannot present window %#x: no present method", wid)
+        grab_focus = getattr(window, "grab_focus", None)
+        if grab_focus:
+            grab_focus()
+        raise_window = getattr(gdkwindow, "raise_", None)
+        if raise_window:
+            log.info("catlink temp raise using gdk raise for window %#x", wid)
+            raise_window()
+            self.catlink_temp_go_above_done = True
+        else:
+            log.info("catlink temp raise cannot raise window %#x: no raise method", wid)
+        return False
+
+    def catlink_raise_macos_window(self, wid: int, gdkwindow) -> bool:
+        try:
+            from xpra.platform.darwin.gdk3_bindings import order_window_front
+            order_window_front(gdkwindow)
+            log.info("catlink temp raise using macOS orderFront for window %#x", wid)
+            return True
+        except Exception:
+            log.info("catlink temp raise macOS orderFront failed for window %#x", wid, exc_info=True)
+            return False
+
+    def catlink_raise_win32_window(self, wid: int, window) -> bool:
+        try:
+            from xpra.platform.win32.gui import raise_window
+            if raise_window(window):
+                log.info("catlink temp raise using Win32 SetWindowPos for window %#x", wid)
+                return True
+        except Exception:
+            log.info("catlink temp raise Win32 SetWindowPos failed for window %#x", wid, exc_info=True)
+        return False
 
     def should_force_grab(self, metadata: typedict) -> bool:
         if not OR_FORCE_GRAB:
