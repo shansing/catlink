@@ -70,6 +70,19 @@ log("gdkdll=%s", gdkdll)
 
 shell32 = WinDLL("shell32", use_last_error=True)
 dwmapi = WinDLL("dwmapi", use_last_error=True)
+user32 = WinDLL("user32", use_last_error=True)
+BringWindowToTop = user32.BringWindowToTop
+BringWindowToTop.argtypes = [HWND]
+BringWindowToTop.restype = c_bool
+SetActiveWindow = user32.SetActiveWindow
+SetActiveWindow.argtypes = [HWND]
+SetActiveWindow.restype = HWND
+SetFocus = user32.SetFocus
+SetFocus.argtypes = [HWND]
+SetFocus.restype = HWND
+SetForegroundWindow = user32.SetForegroundWindow
+SetForegroundWindow.argtypes = [HWND]
+SetForegroundWindow.restype = c_bool
 
 
 def get_swg() -> Callable:
@@ -198,6 +211,19 @@ def get_window_handle(window) -> int:
     hwnd = gdk_win32_window_get_handle(gpointer)
     # log("get_window_handle(%s) gpointer=%#x, hwnd=%#x", gpointer, hwnd)
     return hwnd
+
+
+def raise_window(window) -> bool:
+    hwnd = get_window_handle(window)
+    if not hwnd:
+        return False
+    brought = bool(BringWindowToTop(hwnd))
+    active = bool(SetActiveWindow(hwnd))
+    focus = bool(SetFocus(hwnd))
+    foreground = bool(SetForegroundWindow(hwnd))
+    log("raise_window(%#x) BringWindowToTop=%s, SetActiveWindow=%s, SetFocus=%s, SetForegroundWindow=%s",
+        hwnd, brought, active, focus, foreground)
+    return brought or active or focus or foreground
 
 
 def get_desktop_names() -> Sequence[str]:

@@ -9,6 +9,7 @@
 
 void setOpaque(NSWindow *window, BOOL opaque);
 void setClearBackgroundColor(NSWindow *window);
+void orderWindowFront(NSWindow *window);
 
 float getBackingScaleFactor(NSWindow *window);
 
