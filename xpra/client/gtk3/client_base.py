@@ -1140,9 +1140,34 @@ class GTKXpraClient(GObjectXpraClient, UIXpraClient):
         window = self._id_to_window.get(wid)
         other_window = self._id_to_window.get(other_wid)
         focuslog("restack window %s - %s %s %s",
-                 wid, window, ["above", "below"][above], other_window)
+                 wid, window, ["below", "above"][above], other_window)
         if window:
             window.restack(other_window, above)
+            if above and other_window is None:
+                window.when_realized("restack-raise", self._raise_restacked_window, wid, window)
+
+    def _raise_restacked_window(self, wid: int, window) -> None:
+        if OSX:
+            gdkwindow = window.get_window()
+            if not gdkwindow:
+                focuslog("cannot raise restacked macOS window %#x: no gdk window", wid)
+                return
+            try:
+                from xpra.platform.darwin.gdk3_bindings import order_window_front
+                order_window_front(gdkwindow)
+                focuslog("raised restacked macOS window %#x", wid)
+            except Exception:
+                focuslog("failed to raise restacked macOS window %#x", wid, exc_info=True)
+            return
+        if WIN32:
+            try:
+                from xpra.platform.win32.gui import raise_window
+                if raise_window(window):
+                    focuslog("raised restacked Win32 window %#x", wid)
+                else:
+                    focuslog("failed to raise restacked Win32 window %#x", wid)
+            except Exception:
+                focuslog("failed to raise restacked Win32 window %#x", wid, exc_info=True)
 
     def opengl_setup_failure(self, summary="Xpra OpenGL GPU Acceleration Failure", body="") -> None:
         OK = "0"
