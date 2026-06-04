@@ -82,6 +82,7 @@ SKIP_DUPLICATE_BUTTON_EVENTS: bool = envbool("XPRA_SKIP_DUPLICATE_BUTTON_EVENTS"
 DYNAMIC_TRAY_ICON: bool = envbool("XPRA_DYNAMIC_TRAY_ICON", not OSX and not is_Ubuntu())
 CATLINK_DYNAMIC_DOCK: bool = OSX and envbool("CATLINK_DYNAMIC_DOCK", True)
 CATLINK_FORCE_HIDE_DOCK: bool = OSX and envbool("CATLINK_HIDE_DOCK", False)
+CATLINK_DOCK_ICON_REAPPLY_DELAY: int = envint("CATLINK_DOCK_ICON_REAPPLY_DELAY", 100)
 ICON_OVERLAY: int = envint("XPRA_ICON_OVERLAY", 50)
 ICON_SHRINKAGE: int = envint("XPRA_ICON_SHRINKAGE", 75)
 SAVE_WINDOW_ICONS: bool = envbool("XPRA_SAVE_WINDOW_ICONS", False)
@@ -422,6 +423,23 @@ class WindowClient(StubClientMixin):
 
     def catlink_has_dock_window(self) -> bool:
         return any(self.catlink_is_dock_window(window) for window in self._id_to_window.values())
+
+    def catlink_reapply_dock_icon_later(self, reason: str) -> None:
+        if not CATLINK_DYNAMIC_DOCK or CATLINK_FORCE_HIDE_DOCK or not self.catlink_has_dock_window():
+            return
+
+        def reapply_dock_icon() -> bool:
+            if not self.catlink_has_dock_window():
+                return False
+            try:
+                from xpra.platform.darwin.gui import set_catlink_dock_icon
+                if set_catlink_dock_icon():
+                    log("catlink dock icon reapplied: reason=%s", reason)
+            except Exception:
+                log("catlink dock icon reapply failed: reason=%s", reason, exc_info=True)
+            return False
+
+        GLib.timeout_add(CATLINK_DOCK_ICON_REAPPLY_DELAY, reapply_dock_icon)
 
     def catlink_update_dock_visibility(self, reason: str, force: bool = False) -> None:
         if not CATLINK_DYNAMIC_DOCK or CATLINK_FORCE_HIDE_DOCK:
@@ -1064,6 +1082,7 @@ class WindowClient(StubClientMixin):
     def show_window(self, wid: int, window, metadata, override_redirect: bool) -> None:
         window.show_all()
         self.catlink_update_dock_visibility("show-window")
+        self.catlink_reapply_dock_icon_later("show-window")
         if override_redirect and self.should_force_grab(metadata):
             grablog.warn("forcing grab for OR window %#x, matches %s", wid, OR_FORCE_GRAB)
             self.window_grab(wid, window)
