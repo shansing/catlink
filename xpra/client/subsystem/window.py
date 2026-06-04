@@ -80,6 +80,8 @@ OR_FORCE_GRAB = get_grab_defs(OR_FORCE_GRAB_STR)
 SKIP_DUPLICATE_BUTTON_EVENTS: bool = envbool("XPRA_SKIP_DUPLICATE_BUTTON_EVENTS", True)
 
 DYNAMIC_TRAY_ICON: bool = envbool("XPRA_DYNAMIC_TRAY_ICON", not OSX and not is_Ubuntu())
+CATLINK_DYNAMIC_DOCK: bool = OSX and envbool("CATLINK_DYNAMIC_DOCK", True)
+CATLINK_FORCE_HIDE_DOCK: bool = OSX and envbool("CATLINK_HIDE_DOCK", False)
 ICON_OVERLAY: int = envint("XPRA_ICON_OVERLAY", 50)
 ICON_SHRINKAGE: int = envint("XPRA_ICON_SHRINKAGE", 75)
 SAVE_WINDOW_ICONS: bool = envbool("XPRA_SAVE_WINDOW_ICONS", False)
@@ -274,6 +276,7 @@ class WindowClient(StubClientMixin):
         self.window_close_action: str = "forward"
         self.modal_windows: bool = True
         self.catlink_window_drag_remembered_event_max_age: float = 3.0
+        self.catlink_dock_policy = None
 
         self._pid_to_signalwatcher = {}
         self._signalwatcher_to_wids = {}
@@ -378,6 +381,73 @@ class WindowClient(StubClientMixin):
 
     def init_ui(self, opts) -> None:
         self.init_opengl(opts.opengl)
+        self.catlink_update_dock_visibility("init-ui")
+
+    @staticmethod
+    def catlink_call_window_method(window, name: str):
+        fn = getattr(window, name, None)
+        if not fn:
+            return None
+        try:
+            return fn()
+        except Exception as e:
+            return f"error: {e}"
+
+    @staticmethod
+    def catlink_is_dock_window(window) -> bool:
+        if getattr(window, "is_tray", lambda: False)():
+            return False
+        if getattr(window, "is_OR", lambda: False)():
+            return False
+        return True
+
+    def catlink_dock_window_summary(self) -> list[tuple]:
+        windows = []
+        for wid, window in self._id_to_window.items():
+            metadata = getattr(window, "_metadata", {}) or {}
+            windows.append((
+                wid,
+                type(window).__name__,
+                self.catlink_call_window_method(window, "is_tray"),
+                self.catlink_call_window_method(window, "is_OR"),
+                self.catlink_call_window_method(window, "is_visible"),
+                self.catlink_call_window_method(window, "get_visible"),
+                self.catlink_call_window_method(window, "get_mapped"),
+                getattr(window, "_iconified", None),
+                getattr(window, "_been_mapped", None),
+                metadata.get("title"),
+                metadata.get("class-instance"),
+            ))
+        return windows
+
+    def catlink_has_dock_window(self) -> bool:
+        return any(self.catlink_is_dock_window(window) for window in self._id_to_window.values())
+
+    def catlink_update_dock_visibility(self, reason: str, force: bool = False) -> None:
+        if not CATLINK_DYNAMIC_DOCK or CATLINK_FORCE_HIDE_DOCK:
+            return
+        policy = 0 if self.catlink_has_dock_window() else 1
+        if log.is_debug_enabled():
+            log(
+                "catlink dock visibility: reason=%s, force=%s, current=%s, target=%s, windows=%s",
+                reason,
+                force,
+                self.catlink_dock_policy,
+                ["regular", "accessory"][policy],
+                self.catlink_dock_window_summary(),
+            )
+        if self.catlink_dock_policy == policy and not force:
+            return
+        try:
+            from AppKit import NSApp
+            NSApp.setActivationPolicy_(policy)
+            if policy == 0:
+                from xpra.platform.darwin.gui import set_catlink_dock_icon
+                set_catlink_dock_icon()
+            self.catlink_dock_policy = policy
+            log("catlink dock visibility: applied policy=%s", ["regular", "accessory"][policy])
+        except Exception:
+            log("catlink dock visibility: failed to apply policy", exc_info=True)
 
     def setup_connection(self, conn) -> None:
         display_name = getattr(self, "display_desc", {}).get("display_name", "")
@@ -402,6 +472,7 @@ class WindowClient(StubClientMixin):
         # the protocol has been closed, it is now safe to close all the windows:
         # (cleaner and needed when we run embedded in the client launcher)
         self.destroy_all_windows()
+        self.catlink_update_dock_visibility("cleanup", force=True)
         self.cancel_lost_focus_timer()
         self.cancel_poll_pointer_timer()
         if dq:
@@ -508,6 +579,7 @@ class WindowClient(StubClientMixin):
             if trays:
                 msg += f", {trays} tray"
         log.info(msg)
+        self.catlink_update_dock_visibility("startup-complete", force=True)
 
     ######################################################################
     # pointer:
@@ -991,6 +1063,7 @@ class WindowClient(StubClientMixin):
 
     def show_window(self, wid: int, window, metadata, override_redirect: bool) -> None:
         window.show_all()
+        self.catlink_update_dock_visibility("show-window")
         if override_redirect and self.should_force_grab(metadata):
             grablog.warn("forcing grab for OR window %#x, matches %s", wid, OR_FORCE_GRAB)
             self.window_grab(wid, window)
@@ -1373,6 +1446,7 @@ class WindowClient(StubClientMixin):
             del self._window_to_id[window]
             self.destroy_window(wid, window)
         self.set_tray_icon()
+        self.catlink_update_dock_visibility("lost-window")
 
     def may_reenable_modal_windows(self, window) -> None:
         orwids = tuple(wid for wid, w in self._id_to_window.items() if w.is_OR() and w != window)
