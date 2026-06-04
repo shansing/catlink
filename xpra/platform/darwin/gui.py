@@ -31,6 +31,7 @@ OSX_WHEEL_PRECISE_MULTIPLIER = envint("XPRA_OSX_WHEEL_PRECISE_MULTIPLIER", 1)
 OSX_WHEEL_DIVISOR = envint("XPRA_OSX_WHEEL_DIVISOR", 10)
 WHEEL = envbool("XPRA_WHEEL", True)
 SUBPROCESS_NOTIFIER = envbool("XPRA_OSX_SUBPROCESS_NOTIFIER", False)
+CATLINK_DOCK_ICON_COMPENSATION_DELAY = envint("CATLINK_DOCK_ICON_COMPENSATION_DELAY", 3000)
 
 ALPHA = {
     CG.kCGImageAlphaNone: "AlphaNone",
@@ -61,16 +62,7 @@ def do_init() -> None:
     log("do_init() osxapp=%s", osxapp)
     if not osxapp:
         return  # not much else we can do here
-    from xpra.platform.paths import get_icon
-    from xpra.platform.gui import get_default_icon, set_default_icon
-    main_icon = os.environ.get("CATLINK_MAIN_ICON")
-    if main_icon:
-        set_default_icon(main_icon)
-    filename = get_default_icon()
-    icon = get_icon(filename)
-    log("do_init() icon=%s", icon)
-    if icon:
-        osxapp.set_dock_icon_pixbuf(icon)
+    set_catlink_dock_icon()
     from xpra.platform.darwin.menu import getOSXMenuHelper
     mh = getOSXMenuHelper(None)
     log("do_init() menu helper=%s", mh)
@@ -87,12 +79,38 @@ def do_ready() -> None:
     if osxapp:
         log("%s()", osxapp.ready)
         osxapp.ready()
+        if os.environ.get("CATLINK_MAIN_ICON"):
+            GLib = gi_import("GLib")
+
+            def reset_catlink_dock_icon() -> bool:
+                set_catlink_dock_icon()
+                return False
+            # workaround: sometimes the icon just can't be set
+            GLib.timeout_add(CATLINK_DOCK_ICON_COMPENSATION_DELAY, reset_catlink_dock_icon)
         if os.environ.get("CATLINK_HIDE_DOCK", "0").lower() not in ("0", "false", "no", "off"):
             try:
                 # Keep catlink hidden from the macOS Dock after gtkosx_application finalizes.
                 NSApp.setActivationPolicy_(1)
             except Exception:
                 log("failed to hide Dock icon", exc_info=True)
+
+
+def set_catlink_dock_icon() -> bool:
+    osxapp = get_OSXApplication()
+    if not osxapp:
+        return False
+    from xpra.platform.paths import get_icon
+    from xpra.platform.gui import get_default_icon, set_default_icon
+    main_icon = os.environ.get("CATLINK_MAIN_ICON")
+    if main_icon:
+        set_default_icon(main_icon)
+    filename = get_default_icon()
+    icon = get_icon(filename)
+    log("set_catlink_dock_icon() icon=%s", icon)
+    if icon:
+        osxapp.set_dock_icon_pixbuf(icon)
+        return True
+    return False
 
 
 def get_backends() -> list[type]:
