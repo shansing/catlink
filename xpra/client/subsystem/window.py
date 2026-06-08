@@ -1482,7 +1482,7 @@ class WindowClient(StubClientMixin):
 
     def destroy_window(self, wid: int, window) -> None:
         log("destroy_window(%s#x, %s)", wid, window)
-        window.destroy()
+        self.do_destroy_window(wid, window)
         if self._window_with_grab == wid:
             log("destroying window %s which has grab, ungrabbing!", wid)
             self.window_ungrab()
@@ -1503,6 +1503,9 @@ class WindowClient(StubClientMixin):
                     for pid, w in tuple(self._pid_to_signalwatcher.items()):
                         if w == signalwatcher:
                             del self._pid_to_signalwatcher[pid]
+
+    def do_destroy_window(self, wid: int, window) -> None:
+        window.destroy()
 
     def destroy_all_windows(self) -> None:
         for wid, window in self._id_to_window.items():
