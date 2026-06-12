@@ -396,6 +396,8 @@ class WindowClient(StubClientMixin):
 
     @staticmethod
     def catlink_is_dock_window(window) -> bool:
+        if getattr(window, "catlink_destroy_pending", False):
+            return False
         if getattr(window, "is_tray", lambda: False)():
             return False
         if getattr(window, "is_OR", lambda: False)():
@@ -414,6 +416,7 @@ class WindowClient(StubClientMixin):
                 self.catlink_call_window_method(window, "is_visible"),
                 self.catlink_call_window_method(window, "get_visible"),
                 self.catlink_call_window_method(window, "get_mapped"),
+                getattr(window, "catlink_destroy_pending", None),
                 getattr(window, "_iconified", None),
                 getattr(window, "_been_mapped", None),
                 metadata.get("title"),
