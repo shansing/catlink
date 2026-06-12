@@ -18,6 +18,7 @@ Gdk = gi_import("Gdk")
 log = Logger("window", "keyboard")
 
 UNICODE_KEYNAMES = envbool("XPRA_UNICODE_KEYNAMES", False)
+CATLINK_IM_PASSTHROUGH_ATTR = "catlink_im_passthrough"
 
 
 class KeyboardWindow(GtkStubWindow):
@@ -36,6 +37,14 @@ class KeyboardWindow(GtkStubWindow):
         # used by win32 hooks to tell us about keyboard layout changes for this window
         log("keyboard_layout_changed%s", args)
         self._client.window_keyboard_layout_changed(self)
+
+    def _catlink_im_passthrough_enabled(self) -> bool:
+        return bool(getattr(self._client, CATLINK_IM_PASSTHROUGH_ATTR, False))
+
+    def toggle_catlink_im_passthrough(self, *_args) -> None:
+        enabled = not self._catlink_im_passthrough_enabled()
+        setattr(self._client, CATLINK_IM_PASSTHROUGH_ATTR, enabled)
+        log.warn("Catlink IM passthrough mode %s", "enabled" if enabled else "disabled")
 
     def parse_key_event(self, event, pressed: bool) -> KeyEvent:
         keyval = event.keyval
@@ -80,7 +89,7 @@ class KeyboardWindow(GtkStubWindow):
         return key_event
 
     def handle_key_press_event(self, _window, event) -> bool:
-        if self._handle_im_events(_window, event):
+        if not self._catlink_im_passthrough_enabled() and self._handle_im_events(_window, event):
             return True
 
         key_event = self.parse_key_event(event, True)
@@ -88,7 +97,7 @@ class KeyboardWindow(GtkStubWindow):
         return True
 
     def handle_key_release_event(self, _window, event) -> bool:
-        if self._handle_im_events(_window, event):
+        if not self._catlink_im_passthrough_enabled() and self._handle_im_events(_window, event):
             return True
         key_event = self.parse_key_event(event, False)
         self._client.handle_key_action(self, key_event)
