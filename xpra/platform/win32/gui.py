@@ -14,7 +14,7 @@ from collections.abc import Callable, Sequence
 from ctypes import (
     WinDLL,  # @UnresolvedImport
     CDLL, pythonapi, py_object,
-    HRESULT, c_bool, create_string_buffer, byref, addressof, sizeof,  # @UnresolvedImport
+    HRESULT, c_bool, c_int, c_uint, create_string_buffer, byref, addressof, sizeof,  # @UnresolvedImport
 )
 from ctypes.wintypes import HWND, DWORD, POINT, RECT, HGDIOBJ, LPCWSTR
 from ctypes.util import find_library
@@ -83,6 +83,9 @@ SetFocus.restype = HWND
 SetForegroundWindow = user32.SetForegroundWindow
 SetForegroundWindow.argtypes = [HWND]
 SetForegroundWindow.restype = c_bool
+SetWindowPos = user32.SetWindowPos
+SetWindowPos.argtypes = [HWND, HWND, c_int, c_int, c_int, c_int, c_uint]
+SetWindowPos.restype = c_bool
 
 
 def get_swg() -> Callable:
@@ -218,12 +221,26 @@ def raise_window(window) -> bool:
     if not hwnd:
         return False
     brought = bool(BringWindowToTop(hwnd))
+    foreground = bool(SetForegroundWindow(hwnd))
+    exstyle = GetWindowLongW(hwnd, win32con.GWL_EXSTYLE)
+    was_topmost = bool(exstyle & win32con.WS_EX_TOPMOST)
+    above = bool(getattr(window, "_above", False))
+    use_topmost_hack = not was_topmost and not above
+    topmost = False
+    notopmost = False
+    if use_topmost_hack:
+        topmost = bool(SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0,
+                                    win32con.SWP_NOMOVE | win32con.SWP_NOSIZE))
+        notopmost = bool(SetWindowPos(hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0,
+                                      win32con.SWP_NOMOVE | win32con.SWP_NOSIZE))
+        if topmost and not notopmost:
+            log.warn("Warning: failed to restore window %#x from temporary topmost state", hwnd)
     active = bool(SetActiveWindow(hwnd))
     focus = bool(SetFocus(hwnd))
-    foreground = bool(SetForegroundWindow(hwnd))
-    log("raise_window(%#x) BringWindowToTop=%s, SetActiveWindow=%s, SetFocus=%s, SetForegroundWindow=%s",
-        hwnd, brought, active, focus, foreground)
-    return brought or active or focus or foreground
+    temporary_topmost = topmost and notopmost
+    log("raise_window(%#x) BringWindowToTop=%s, SetForegroundWindow=%s, was_topmost=%s, above=%s, SetWindowPos(HWND_TOPMOST)=%s, SetWindowPos(HWND_NOTOPMOST)=%s, SetActiveWindow=%s, SetFocus=%s",
+        hwnd, brought, foreground, was_topmost, above, topmost, notopmost, active, focus)
+    return brought or foreground or temporary_topmost or active or focus
 
 
 def get_desktop_names() -> Sequence[str]:
@@ -324,6 +341,20 @@ WS_NAMES: dict[int, str] = {
 
 def style_str(style) -> str:
     return csv(s for c, s in WS_NAMES.items() if (c & style) == c)
+
+
+SYSCOMMAND_NAMES: dict[int, str] = {
+    win32con.SC_MINIMIZE: "SC_MINIMIZE",
+    win32con.SC_MAXIMIZE: "SC_MAXIMIZE",
+    win32con.SC_RESTORE: "SC_RESTORE",
+}
+
+
+SIZE_NAMES: dict[int, str] = {
+    win32con.SIZE_RESTORED: "SIZE_RESTORED",
+    win32con.SIZE_MINIMIZED: "SIZE_MINIMIZED",
+    win32con.SIZE_MAXIMIZED: "SIZE_MAXIMIZED",
+}
 
 
 def pointer_grab(window, *args) -> bool:
@@ -572,6 +603,42 @@ def add_window_hooks(window) -> None:
                 return 0
 
             win32hooks.add_window_event_handler(win32con.WM_INPUTLANGCHANGE, inputlangchange)
+
+        if log.is_debug_enabled():
+            def window_management_event(hwnd: int, event: int, wParam: int, lParam: int) -> None:
+                style = GetWindowLongW(hwnd, win32con.GWL_STYLE)
+                wid = getattr(window, "wid", 0)
+                if event == win32con.WM_SYSCOMMAND:
+                    command = wParam & 0xFFF0
+                    log("win32 window event wid=%#x hwnd=%#x WM_SYSCOMMAND command=%s(%#x), raw=%#x, lParam=%#x, iconified=%s, maximized=%s, style=%s",
+                        wid, hwnd, SYSCOMMAND_NAMES.get(command, command), command, wParam, lParam,
+                        getattr(window, "_iconified", None), getattr(window, "_maximized", None), style_str(style))
+                elif event == win32con.WM_SIZE:
+                    width = lParam & 0xFFFF
+                    height = (lParam >> 16) & 0xFFFF
+                    log("win32 window event wid=%#x hwnd=%#x WM_SIZE size=%s(%#x), geometry=%sx%s, iconified=%s, maximized=%s, style=%s",
+                        wid, hwnd, SIZE_NAMES.get(wParam, wParam), wParam, width, height,
+                        getattr(window, "_iconified", None), getattr(window, "_maximized", None), style_str(style))
+                elif event in (win32con.WM_WINDOWPOSCHANGING, win32con.WM_WINDOWPOSCHANGED):
+                    log("win32 window event wid=%#x hwnd=%#x event=%s, wParam=%#x, lParam=%#x, iconified=%s, maximized=%s, style=%s",
+                        wid, hwnd,
+                        "WM_WINDOWPOSCHANGING" if event == win32con.WM_WINDOWPOSCHANGING else "WM_WINDOWPOSCHANGED",
+                        wParam, lParam, getattr(window, "_iconified", None), getattr(window, "_maximized", None),
+                        style_str(style))
+
+            def syscommand(hwnd: int, event: int, wParam: int, lParam: int) -> None:
+                window_management_event(hwnd, event, wParam, lParam)
+
+            def size(hwnd: int, event: int, wParam: int, lParam: int) -> None:
+                window_management_event(hwnd, event, wParam, lParam)
+
+            def windowpos(hwnd: int, event: int, wParam: int, lParam: int) -> None:
+                window_management_event(hwnd, event, wParam, lParam)
+
+            win32hooks.add_window_event_handler(win32con.WM_SYSCOMMAND, syscommand)
+            win32hooks.add_window_event_handler(win32con.WM_SIZE, size)
+            win32hooks.add_window_event_handler(win32con.WM_WINDOWPOSCHANGING, windowpos)
+            win32hooks.add_window_event_handler(win32con.WM_WINDOWPOSCHANGED, windowpos)
 
         if WHEEL:
             VERTICAL = "vertical"
