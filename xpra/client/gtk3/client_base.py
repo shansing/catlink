@@ -1534,6 +1534,7 @@ class GTKXpraClient(GObjectXpraClient, UIXpraClient):
             window.hide()
         except (RuntimeError, ValueError):
             log("hide before destroy failed for window %#x / %s", wid, window, exc_info=True)
+        self.catlink_update_dock_visibility("destroy-window-pending")
 
         def really_destroy() -> bool:
             try:
