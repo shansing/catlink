@@ -604,6 +604,9 @@ class GTKClientWindowBase(ClientWindowBase, Gtk.Window):
             wstate = getattr(Gdk.WindowState, flag.upper())  # ie: Gdk.WindowState.FULLSCREEN
             if event.changed_mask & wstate:
                 state_updates[flag] = bool(event.new_window_state & wstate)
+        if statelog.is_debug_enabled():
+            statelog("window-state decoded wid=%#x updates=%s, current iconified=%s, maximized=%s, send_iconify_timer=%s",
+                     self.wid, state_updates, self._iconified, self._maximized, self.send_iconify_timer)
         self.update_window_state(state_updates)
 
     def update_window_state(self, state_updates: dict[str, bool]):

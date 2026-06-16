@@ -1140,14 +1140,27 @@ class GTKXpraClient(GObjectXpraClient, UIXpraClient):
         above = int(detail == 0)
         window = self._id_to_window.get(wid)
         other_window = self._id_to_window.get(other_wid)
-        focuslog("restack window %s - %s %s %s",
-                 wid, window, ["below", "above"][above], other_window)
+        if focuslog.is_debug_enabled():
+            focuslog("restack window %s - %s %s %s, iconified=%s, maximized=%s, send_iconify_timer=%s",
+                     wid, window, ["below", "above"][above], other_window,
+                     getattr(window, "_iconified", None), getattr(window, "_maximized", None),
+                     getattr(window, "send_iconify_timer", None))
+        else:
+            focuslog("restack window %s - %s %s %s",
+                     wid, window, ["below", "above"][above], other_window)
         if window:
             window.restack(other_window, above)
             if above and other_window is None:
+                if not OSX and getattr(window, "_iconified", False):
+                    focuslog("deiconifying restacked window %#x", wid)
+                    window.deiconify()
                 window.when_realized("restack-raise", self._raise_restacked_window, wid, window)
 
     def _raise_restacked_window(self, wid: int, window) -> None:
+        if focuslog.is_debug_enabled():
+            focuslog("raise restacked window %#x state: iconified=%s, maximized=%s, send_iconify_timer=%s",
+                     wid, getattr(window, "_iconified", None), getattr(window, "_maximized", None),
+                     getattr(window, "send_iconify_timer", None))
         if OSX:
             gdkwindow = window.get_window()
             if not gdkwindow:
