@@ -124,8 +124,10 @@ class OSXClipboardProxy(ClipboardProxyCore):
         if any(t in (NSStringPboardType, NSPasteboardTypeURL, "public.utf8-plain-text", "public.html", "TEXT") for t in
                types):
             targets += ["TEXT", "STRING", "text/plain", "text/plain;charset=utf-8", "UTF8_STRING"]
-        if any(t in (NSPasteboardTypeTIFF, NSPasteboardTypePNG) for t in types):
-            targets += IMAGE_FORMATS
+        if any(t in (NSPasteboardTypePNG, NSPasteboardTypeTIFF) for t in types):
+            targets.append("image/png")
+        if NSPasteboardTypeTIFF in types:
+            targets.append("image/tiff")
         log("get_targets() targets(%s)=%s", types, targets)
         return targets
 
