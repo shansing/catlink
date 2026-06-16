@@ -296,18 +296,23 @@ def same_bytes(data: bytes, dst: str) -> bool:
 
 
 def materialized_path(path: str) -> str:
-    path = path.replace("\\", "/")
-    suffix = path
-    marker = "/Library/Group Containers/"
-    if marker in path:
-        suffix = path[path.index(marker):]
-    elif path.startswith("/"):
-        suffix = path[1:]
+    suffix = materialized_suffix(path)
     root = os.path.realpath(get_materialized_root())
     dst = os.path.realpath(os.path.join(root, suffix.lstrip("/")))
     if not is_path_under(dst, root):
         raise ValueError("materialized path escapes cache root")
     return dst
+
+
+def materialized_suffix(path: str) -> str:
+    path = os.path.normpath(path.replace("\\", "/"))
+    home = os.path.normpath(os.path.expanduser("~"))
+    try:
+        if os.path.commonpath((path, home)) == home:
+            return os.path.relpath(path, home)
+    except ValueError:
+        pass
+    return path.lstrip("/")
 
 
 def get_materialized_root() -> str:
