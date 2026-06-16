@@ -65,8 +65,25 @@ def filter_data(dtype: str = "", dformat: int = 0, data=b"", trusted: bool = Fal
             img_draw = ImageDraw.Draw(img)
             w, h = img.size
             img_draw.text((10, max(0, h // 2 - 16)), 'via Xpra, %s' % datetime.now().isoformat(), fill='black')
-        # now save it:
         img_type = (output_dtype or dtype).split("/")[-1]
+        if img_type == "jpeg":
+            if img.mode in ("RGBA", "LA"):
+                log.warn("Warning: converting clipboard image with alpha to JPEG using a white background")
+                from PIL import Image
+                alpha = img.getchannel("A")
+                background = Image.new("RGB", img.size, "white")
+                background.paste(img, mask=alpha)
+                img = background
+            elif img.mode == "P" and "transparency" in img.info:
+                log.warn("Warning: converting clipboard image with transparency to JPEG using a white background")
+                from PIL import Image
+                rgba = img.convert("RGBA")
+                background = Image.new("RGB", rgba.size, "white")
+                background.paste(rgba, mask=rgba.getchannel("A"))
+                img = background
+            elif img.mode != "RGB":
+                img = img.convert("RGB")
+        # now save it:
         buf = BytesIO()
         img.save(buf, img_type.upper())  # ie: "PNG"
         data = buf.getvalue()
