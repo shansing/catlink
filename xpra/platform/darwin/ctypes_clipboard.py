@@ -8,17 +8,19 @@ from time import monotonic
 from collections.abc import Sequence
 
 from AppKit import (
-    NSURL, NSStringPboardType, NSPasteboardTypeFileURL, NSPasteboardTypePNG,
-    NSPasteboardTypeTIFF, NSPasteboardTypeURL, NSPasteboardURLReadingFileURLsOnlyKey,
-    NSPasteboard,
+    NSStringPboardType, NSPasteboardTypeFileURL, NSPasteboardTypePNG,
+    NSPasteboardTypeTIFF, NSPasteboardTypeURL, NSPasteboard,
 )
 from CoreFoundation import NSData, CFDataGetBytes, CFDataGetLength
 
 from xpra.clipboard.timeout import ClipboardTimeoutHelper
 from xpra.clipboard.common import ClipboardCallback
 from xpra.clipboard.targets import _filter_targets, TEXT_TARGETS
-from xpra.clipboard.uri import file_path_to_clientfs_uri
 from xpra.clipboard.proxy import ClipboardProxyCore, filter_data
+from xpra.platform.darwin.rich_clipboard import (
+    HTML_TARGETS, get_clientfs_uris, get_pasteboard_file_urls,
+    get_rich_text_html, get_rich_text_image, has_rich_text_content, has_rtfd_rtf,
+)
 from xpra.platform.ui_thread_watcher import get_ui_watcher
 from xpra.util.str_fn import csv, Ellipsizer, bytestostr
 from xpra.os_util import gi_import
@@ -96,20 +98,13 @@ class OSXClipboardProxy(ClipboardProxyCore):
         return str(text)
 
     def get_file_urls(self) -> list:
-        urls = self.pasteboard.readObjectsForClasses_options_(
-            [NSURL],
-            {NSPasteboardURLReadingFileURLsOnlyKey: True},
-        )
+        urls = get_pasteboard_file_urls(self.pasteboard)
         log("get_file_urls()=%s", urls)
-        return list(urls or ())
+        return urls
 
     def get_uri_list(self) -> str:
-        uris = []
-        for url in self.get_file_urls():
-            path = url.path()
-            if not path:
-                continue
-            uris.append(file_path_to_clientfs_uri(str(path)))
+        urls = self.get_file_urls()
+        uris = get_clientfs_uris(self.pasteboard, urls, materialize=has_rtfd_rtf(self.pasteboard.types() or ()))
         data = "\n".join(uris)
         if data:
             data += "\n"
@@ -124,12 +119,14 @@ class OSXClipboardProxy(ClipboardProxyCore):
         if any(t in (NSStringPboardType, NSPasteboardTypeURL, "public.utf8-plain-text", "public.html", "TEXT") for t in
                types):
             targets += ["TEXT", "STRING", "text/plain", "text/plain;charset=utf-8", "UTF8_STRING"]
+        if has_rtfd_rtf(types):
+            targets += list(HTML_TARGETS)
         if any(t in (NSPasteboardTypePNG, NSPasteboardTypeTIFF) for t in types):
             targets.append("image/png")
         if NSPasteboardTypeTIFF in types:
             targets.append("image/tiff")
         log("get_targets() targets(%s)=%s", types, targets)
-        return targets
+        return list(dict.fromkeys(targets))
 
     def get_contents(self, target: str, got_contents: ClipboardCallback) -> None:
         request_started = monotonic()
@@ -145,11 +142,29 @@ class OSXClipboardProxy(ClipboardProxyCore):
             finish("ATOM", 32, self.get_targets())
             return
         if target in URI_TARGETS:
+            if has_rtfd_rtf(self.pasteboard.types() or ()) and has_rich_text_content(self.pasteboard):
+                log("get_contents(%s) ignoring rich text file URLs because non-whitespace text is present", target)
+                got_contents("", 0, None)
+                return
             uri_list = self.get_uri_list()
             if uri_list:
                 finish(target, 8, uri_list)
             else:
                 got_contents("", 0, None)
+            return
+        if target in HTML_TARGETS:
+            if not has_rtfd_rtf(self.pasteboard.types() or ()):
+                got_contents("", 0, None)
+                return
+            try:
+                html = get_rich_text_html(self.pasteboard)
+                if html:
+                    finish(target, 8, html)
+                    return
+            except Exception:
+                elapsed = int((monotonic() - request_started) * 1000)
+                log.error("Error: failed to copy rich text as HTML after %ims", elapsed, exc_info=True)
+            got_contents("", 0, None)
             return
         if target in IMAGE_FORMATS:
             try:
@@ -189,8 +204,17 @@ class OSXClipboardProxy(ClipboardProxyCore):
             src_dtype = "image/tiff"
             img_data = self.pasteboard.dataForType_(NSPasteboardTypeTIFF)
         else:
-            log("image target '%s' not found in %s", target, types)
-            return None
+            img_data = get_rich_text_image(self.pasteboard, target)
+            if img_data:
+                src_dtype = target
+            else:
+                log("image target '%s' not found in %s", target, types)
+                return None
+        if isinstance(img_data, bytes):
+            img_data = filter_data(dtype=src_dtype, dformat=8, data=img_data, trusted=False, output_dtype=target)
+            log("get_image_contents(%s)=%i %s from rich text, total elapsed=%ims",
+                target, len(img_data or ()), type(img_data), int((monotonic() - started) * 1000))
+            return img_data
         if not img_data:
             elapsed = int((monotonic() - started) * 1000)
             log("get_image_contents(%s) no data for source=%s after %ims", target, src_dtype, elapsed)
