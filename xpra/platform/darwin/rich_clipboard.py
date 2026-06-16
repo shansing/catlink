@@ -220,8 +220,9 @@ def get_pasteboard_file_urls(pasteboard) -> list:
 
 def get_clientfs_uris(pasteboard, urls=None, materialize=False) -> list[str]:
     uris = []
+    png_map = get_png_attachment_map(pasteboard) if materialize else {}
     for url in urls if urls is not None else get_pasteboard_file_urls(pasteboard):
-        path = materialize_url(url) if materialize else str(url.path() or "")
+        path = materialize_url(url, png_map) if materialize else str(url.path() or "")
         if path:
             uris.append(file_path_to_clientfs_uri(path))
     return uris
@@ -242,14 +243,17 @@ def get_clientfs_uri_map(pasteboard) -> dict[str, list[str]]:
     return uri_map
 
 
-def materialize_url(url) -> str:
+def materialize_url(url, png_map=None) -> str:
     path = url.path()
-    return materialize_path(str(path)) if path else ""
+    return materialize_path(str(path), png_map) if path else ""
 
 
-def materialize_path(path: str) -> str:
+def materialize_path(path: str, png_map=None) -> str:
     if not path:
         return ""
+    png_data = pop_png_attachment(png_map, path)
+    if png_data:
+        return materialize_png(path, png_data)
     dst = materialized_path(path)
     try:
         if same_file(path, dst):
@@ -261,6 +265,34 @@ def materialize_path(path: str) -> str:
     except Exception as e:
         log("materialize_path(%s) failed: %s", path, e)
         return ""
+
+
+def materialize_png(path: str, png_data: bytes) -> str:
+    dst = materialized_path(replace_extension(path, ".png"))
+    try:
+        if same_bytes(png_data, dst):
+            return dst
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        with open(dst, "wb") as f:
+            f.write(png_data)
+        log("materialize_png(%s)=%s", path, dst)
+        return dst
+    except Exception as e:
+        log("materialize_png(%s) failed: %s", path, e)
+        return ""
+
+
+def replace_extension(path: str, extension: str) -> str:
+    base, _ = os.path.splitext(path)
+    return base + extension
+
+
+def same_bytes(data: bytes, dst: str) -> bool:
+    try:
+        with open(dst, "rb") as f:
+            return f.read() == data
+    except OSError:
+        return False
 
 
 def materialized_path(path: str) -> str:
@@ -322,6 +354,24 @@ def clone_or_copy(src: str, dst: str) -> None:
 
 def attachment_name(value: str) -> str:
     return os.path.basename(unquote(value or "")).lower()
+
+
+def get_png_attachment_map(pasteboard) -> dict[str, list[bytes]]:
+    attributed = get_attributed_string(pasteboard)
+    return get_rich_text_image_map(attributed, "image/png")
+
+
+def pop_png_attachment(png_map, path: str) -> bytes:
+    if not png_map:
+        return b""
+    if not is_tiff_path(path):
+        return b""
+    images = png_map.get(attachment_name(path))
+    return images.pop(0) if images else b""
+
+
+def is_tiff_path(path: str) -> bool:
+    return os.path.splitext(path)[1].lower() in (".tif", ".tiff")
 
 
 def get_rich_text_image(pasteboard, target: str) -> bytes | None:
