@@ -277,6 +277,9 @@ class WindowClient(StubClientMixin):
         self.window_close_action: str = "forward"
         self.modal_windows: bool = True
         self.catlink_window_drag_remembered_event_max_age: float = 3.0
+        self.catlink_osx_recover_mouse_down: bool = True
+        self.catlink_osx_recover_mouse_down_max_age: float = 3.0
+        self.catlink_osx_recover_mouse_down_distance_warn_threshold: int = 24
         self.catlink_dock_policy = None
 
         self._pid_to_signalwatcher = {}
@@ -319,6 +322,16 @@ class WindowClient(StubClientMixin):
         self.catlink_window_drag_remembered_event_max_age = max(
             0.0,
             float(getattr(opts, "catlink_window_drag_remembered_event_max_age", 3.0) or 3.0),
+        )
+        recover_mouse_down = getattr(opts, "catlink_osx_recover_mouse_down", True)
+        self.catlink_osx_recover_mouse_down = str(recover_mouse_down).lower() not in FALSE_OPTIONS
+        self.catlink_osx_recover_mouse_down_max_age = max(
+            0.0,
+            float(getattr(opts, "catlink_osx_recover_mouse_down_max_age", 3.0) or 3.0),
+        )
+        self.catlink_osx_recover_mouse_down_distance_warn_threshold = max(
+            0,
+            int(getattr(opts, "catlink_osx_recover_mouse_down_distance_warn_threshold", 24) or 24),
         )
         if self.windows_enabled:
             if opts.window_close not in ("forward", "ignore", "disconnect", "shutdown", "auto"):

@@ -78,6 +78,21 @@ NO_OPENGL_WINDOW_TYPES = os.environ.get(
 ).split(",")
 WINDOW_GROUPING = os.environ.get("XPRA_WINDOW_GROUPING", "group-leader-xid,class-instance,pid,command").split(",")
 
+OSX_CURSOR_ALIASES = {
+    "size_ver": ("ns-resize", "n-resize", "s-resize", "sb_v_double_arrow"),
+    "size_hor": ("ew-resize", "e-resize", "w-resize", "sb_h_double_arrow"),
+    "size_fdiag": ("nwse-resize", "nw-resize", "se-resize"),
+    "size_bdiag": ("nesw-resize", "ne-resize", "sw-resize"),
+    "top_side": ("n-resize", "ns-resize"),
+    "bottom_side": ("s-resize", "ns-resize"),
+    "left_side": ("w-resize", "ew-resize"),
+    "right_side": ("e-resize", "ew-resize"),
+    "top_left_corner": ("nw-resize", "nwse-resize"),
+    "bottom_right_corner": ("se-resize", "nwse-resize"),
+    "top_right_corner": ("ne-resize", "nesw-resize"),
+    "bottom_left_corner": ("sw-resize", "nesw-resize"),
+}
+
 VREFRESH = envint("XPRA_VREFRESH", 0)
 
 inject_css_overrides()
@@ -90,15 +105,27 @@ def get_local_cursor(cursor_name: str):
     display = Gdk.Display.get_default()
     if not cursor_name or not display:
         return None
-    try:
-        cursor = Gdk.Cursor.new_from_name(display, cursor_name)
-    except TypeError:
-        cursorlog("Gdk.Cursor.new_from_name%s", (display, cursor_name), exc_info=True)
-        cursor = None
-    if cursor:
-        cursorlog("Gdk.Cursor.new_from_name(%s, %s)=%s", display, cursor_name, cursor)
-    else:
-        gdk_cursor = cursor_types.get(cursor_name.upper())
+    cursor_names = (cursor_name,)
+    if OSX:
+        cursor_names = OSX_CURSOR_ALIASES.get(cursor_name, ()) + cursor_names
+    cursor = None
+    for name in cursor_names:
+        try:
+            cursor = Gdk.Cursor.new_from_name(display, name)
+        except TypeError:
+            cursorlog("Gdk.Cursor.new_from_name%s", (display, name), exc_info=True)
+            cursor = None
+        if cursor:
+            cursorlog("Gdk.Cursor.new_from_name(%s, %s)=%s", display, name, cursor)
+            break
+    if not cursor:
+        gdk_names = cursor_names
+        gdk_cursor = None
+        for name in gdk_names:
+            gdk_cursor = cursor_types.get(name.upper())
+            if gdk_cursor:
+                cursorlog("gdk_cursor(%s)=%s", name, gdk_cursor)
+                break
         cursorlog("gdk_cursor(%s)=%s", cursor_name, gdk_cursor)
         if gdk_cursor:
             try:
@@ -960,7 +987,27 @@ class GTKXpraClient(GObjectXpraClient, UIXpraClient):
                 # use default:
                 cursor = get_default_cursor()
         for w in windows:
+            if OSX and not cursor_data and getattr(w, "osx_resize_cursor_data", ()) and getattr(w, "button_pressed", None):
+                if cursorlog.is_debug_enabled():
+                    cursorlog("suppressing empty cursor during active macOS resize on window %#x", getattr(w, "wid", 0))
+                schedule_reapply = getattr(w, "schedule_reapply_osx_resize_cursor", None)
+                if schedule_reapply:
+                    schedule_reapply()
+                continue
             w.set_cursor_data(cursor_data)
+            if getattr(w, "cursor_data", None) is not cursor_data:
+                # Some GTK window classes inherit a no-op set_cursor_data() before the PointerWindow mixin.
+                # Keep the window/backing cursor cache in sync with the server cursor packet anyway.
+                if cursorlog.is_debug_enabled():
+                    cursorlog("forcing cursor_data cache on window %#x", getattr(w, "wid", 0))
+                w.cursor_data = cursor_data
+                backing = getattr(w, "_backing", None)
+                if backing:
+                    when_realized = getattr(w, "when_realized", None)
+                    if when_realized:
+                        when_realized("cursor", backing.set_cursor_data, cursor_data)
+                    else:
+                        backing.set_cursor_data(cursor_data)
             # the cursor should only apply to the window contents (aka "drawingarea"),
             # and not the headerbar:
             gtkwin = getattr(w, "drawing_area", w)
@@ -969,6 +1016,11 @@ class GTKXpraClient(GObjectXpraClient, UIXpraClient):
             if gdkwin:
                 self._cursors[w] = cursor_data
                 gdkwin.set_cursor(cursor)
+            if WIN32 or OSX:
+                # Native resize borders belong to the toplevel window, not the drawing area.
+                toplevel = w.get_window()
+                if toplevel and toplevel != gdkwin:
+                    toplevel.set_cursor(cursor)
 
     def make_cursor(self, cursor_data: Sequence) -> Gdk.Cursor | None:
         # if present, try cursor ny name:

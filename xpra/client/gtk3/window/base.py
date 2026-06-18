@@ -170,6 +170,8 @@ class GTKClientWindowBase(ClientWindowBase, Gtk.Window):
         self.show_pointer_overlay_timer: int = 0
         self.moveresize_timer: int = 0
         self.moveresize_event = None
+        self.osx_resize_cursor_data = ()
+        self.osx_resize_cursor_timer = 0
         # only set this initially:
         # (so the server can't make us kill just any pid!)
         watcher_pid = metadata.intget("watcher-pid", 0)
@@ -1151,7 +1153,14 @@ class GTKClientWindowBase(ClientWindowBase, Gtk.Window):
                 geomlog("edge(%s)=%s", MOVERESIZE_DIRECTION_STRING.get(direction), edge)
                 if direction is not None:
                     etime = Gtk.get_current_event_time()
+                    cursor_data = getattr(self, "cursor_data", ())
+                    cursor_name = bytestostr(cursor_data[9]) if len(cursor_data) >= 10 else ""
+                    geomlog("begin_resize_drag edge=%s button=%s pointer=(%s, %s) time=%s cursor-name=%s",
+                            edge, button, x, y, etime, cursor_name)
                     self.begin_resize_drag(edge, button, x, y, etime)
+                    if OSX and cursor_name and cursor_name != "left_ptr":
+                        self.osx_resize_cursor_data = cursor_data
+                        self.schedule_reapply_osx_resize_cursor()
         else:
             # handle it ourselves:
             # use window coordinates (which include decorations)
@@ -1160,6 +1169,20 @@ class GTKClientWindowBase(ClientWindowBase, Gtk.Window):
             self.moveresize_event = [x_root, y_root, direction, button, None, wx, wy, ww, wh]
         poll = getattr(self, "start_button_polling", noop)
         poll()
+
+    def reapply_osx_resize_cursor(self) -> bool:
+        self.osx_resize_cursor_timer = 0
+        cursor_data = getattr(self, "osx_resize_cursor_data", ())
+        if not OSX or not cursor_data:
+            return False
+        if not getattr(self, "button_pressed", None):
+            self.osx_resize_cursor_data = ()
+            return False
+        if geomlog.is_debug_enabled():
+            cursor_name = bytestostr(cursor_data[9]) if len(cursor_data) >= 10 else ""
+            geomlog("reapply_osx_resize_cursor window=%#x cursor-name=%s", getattr(self, "wid", 0), cursor_name)
+        self._client.set_windows_cursor([self], cursor_data)
+        return False
 
     def initiate_moveresize_x11(self, x_root: int, y_root: int, direction: int,
                                 button: int, source_indication: int) -> None:
@@ -1335,12 +1358,19 @@ class GTKClientWindowBase(ClientWindowBase, Gtk.Window):
             self._monitor = monitor
         geomlog("configure event: current size=%s, new size=%s, moved by=%s, backing=%s, iconified=%s",
                 self._size, (w, h), (dx, dy), self._backing, self._iconified)
+        if OSX and getattr(self, "osx_resize_cursor_data", ()):
+            self.schedule_reapply_osx_resize_cursor()
         self._size = (w, h)
         self._set_backing_size(w, h)
         self.send_configure_event(skip_geometry)
         if self._backing and not self._iconified:
             geomlog("configure event: queueing redraw")
             self.repaint(0, 0, w, h)
+
+    def schedule_reapply_osx_resize_cursor(self) -> None:
+        if not OSX or self.osx_resize_cursor_timer:
+            return
+        self.osx_resize_cursor_timer = GLib.idle_add(self.reapply_osx_resize_cursor)
 
     def get_configure_client_properties(self) -> dict[str, Any]:
         return self._client_properties.copy()

@@ -76,6 +76,12 @@ class ClientWindow(WindowBaseClass):
             if hasattr(bc, "init_widget_events"):
                 bc.init_widget_events(self, widget)
 
+    def set_cursor_data(self, cursor_data) -> None:
+        for bc in WINDOW_BASES:
+            method = bc.__dict__.get("set_cursor_data")
+            if method:
+                method(self, cursor_data)
+
     def set_icon(self, pixbuf: GdkPixbuf.Pixbuf) -> None:
         for bc in WINDOW_BASES:
             if hasattr(bc, "set_icon"):
