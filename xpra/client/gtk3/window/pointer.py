@@ -29,9 +29,11 @@ SIMULATE_MOUSE_DOWN = envbool("XPRA_SIMULATE_MOUSE_DOWN", True)
 SIMULATE_MOUSE_UP = envbool("XPRA_SIMULATE_MOUSE_UP", True)
 BUTTON_POLLING_DELAY = envint("XPRA_BUTTON_POLLING_DELAY", 50)
 CURSOR_IDLE_TIMEOUT = envint("XPRA_CURSOR_IDLE_TIMEOUT", 6)
-OSX_RECOVER_MOUSE_DOWN = envbool("XPRA_OSX_RECOVER_MOUSE_DOWN", True)
-OSX_RECOVER_MOUSE_DOWN_MAX_AGE = envfloat("XPRA_OSX_RECOVER_MOUSE_DOWN_MAX_AGE", 3.0)
-OSX_RECOVER_MOUSE_DOWN_DISTANCE_WARN_THRESHOLD = envint("XPRA_OSX_RECOVER_MOUSE_DOWN_DISTANCE_WARN_THRESHOLD", 24)
+OSX_RECOVER_MOUSE_DOWN = envbool("CATLINK_OSX_RECOVER_MOUSE_DOWN", True)
+OSX_RECOVER_MOUSE_DOWN_MAX_AGE = envfloat("CATLINK_OSX_RECOVER_MOUSE_DOWN_MAX_AGE", 3.0)
+OSX_RECOVER_MOUSE_DOWN_DISTANCE_WARN_THRESHOLD = envint(
+    "CATLINK_OSX_RECOVER_MOUSE_DOWN_DISTANCE_WARN_THRESHOLD", 24,
+)
 OSX_MOUSE_EVENT_MONITOR_INSTALLED = False
 OSX_LAST_MOUSE_DOWN: dict[str, Any] = {}
 
@@ -135,7 +137,7 @@ def norm_scroll(value: float):
 class PointerWindow(GtkStubWindow):
 
     def init_window(self, client, metadata: typedict, client_props: typedict) -> None:
-        if getattr(client, "catlink_osx_recover_mouse_down", OSX_RECOVER_MOUSE_DOWN):
+        if OSX_RECOVER_MOUSE_DOWN:
             install_osx_mouse_event_monitor()
         self.cursor_data = ()
         self.remove_pointer_overlay_timer = 0
@@ -347,12 +349,11 @@ class PointerWindow(GtkStubWindow):
         # down events near native resize edges so Quartz can handle resizing.
         # Borderless remote windows still need that press forwarded to the server;
         # recover it from the recent NSEvent recorded by the local monitor above.
-        recover_mouse_down = getattr(self._client, "catlink_osx_recover_mouse_down", OSX_RECOVER_MOUSE_DOWN)
-        if not OSX or not recover_mouse_down or 1 not in buttons or self.button_pressed:
+        if not OSX or not OSX_RECOVER_MOUSE_DOWN or 1 not in buttons or self.button_pressed:
             return False
         if not OSX_LAST_MOUSE_DOWN or OSX_LAST_MOUSE_DOWN.get("consumed"):
             return False
-        max_age = getattr(self._client, "catlink_osx_recover_mouse_down_max_age", OSX_RECOVER_MOUSE_DOWN_MAX_AGE)
+        max_age = OSX_RECOVER_MOUSE_DOWN_MAX_AGE
         age = monotonic() - OSX_LAST_MOUSE_DOWN.get("time", 0)
         if age < 0 or age > max_age:
             return False
@@ -374,11 +375,7 @@ class PointerWindow(GtkStubWindow):
         current_rel = round(event.x), round(event.y)
         recovered_rel = pointer_data[2], pointer_data[3]
         distance = max(abs(current_rel[0] - recovered_rel[0]), abs(current_rel[1] - recovered_rel[1]))
-        distance_warn_threshold = getattr(
-            self._client,
-            "catlink_osx_recover_mouse_down_distance_warn_threshold",
-            OSX_RECOVER_MOUSE_DOWN_DISTANCE_WARN_THRESHOLD,
-        )
+        distance_warn_threshold = OSX_RECOVER_MOUSE_DOWN_DISTANCE_WARN_THRESHOLD
         if distance > distance_warn_threshold:
             log.warn("Warning: recovering macOS mouse-down after pointer moved %s px: recovered=%s current=%s",
                      distance, recovered_rel, current_rel)

@@ -125,8 +125,9 @@ def get_local_cursor(cursor_name: str):
     if OSX:
         cursor_names = OSX_CURSOR_ALIASES.get(cursor_name, ()) + cursor_names
     if WIN32:
+        win32_cursor_names = WIN32_CURSOR_TYPE_ALIASES.get(cursor_name, ())
         gdk_cursor = None
-        for name in WIN32_CURSOR_TYPE_ALIASES.get(cursor_name, ()):
+        for name in win32_cursor_names:
             gdk_cursor = cursor_types.get(name)
             if gdk_cursor is not None:
                 cursorlog("win32 gdk_cursor(%s -> %s)=%s", cursor_name, name, gdk_cursor)

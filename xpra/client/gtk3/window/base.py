@@ -14,7 +14,7 @@ from cairo import RectangleInt, Region
 from xpra.os_util import gi_import, WIN32, OSX, POSIX
 from xpra.util.objects import typedict
 from xpra.util.str_fn import bytestostr
-from xpra.util.env import envint, envbool, first_time, ignorewarnings, IgnoreWarningsContext
+from xpra.util.env import envint, envbool, envfloat, first_time, ignorewarnings, IgnoreWarningsContext
 from xpra.util.gobject import no_arg_signal
 from xpra.gtk.util import get_default_root_window
 from xpra.gtk.window import set_visual
@@ -48,6 +48,8 @@ statelog = Logger("state")
 eventslog = Logger("events")
 geomlog = Logger("geometry")
 alphalog = Logger("alpha")
+
+CATLINK_WINDOW_DRAG_REMEMBERED_EVENT_MAX_AGE = envfloat("CATLINK_WINDOW_DRAG_REMEMBERED_EVENT_MAX_AGE", 3.0)
 
 HAS_X11_BINDINGS = False
 
@@ -1138,8 +1140,10 @@ class GTKClientWindowBase(ClientWindowBase, Gtk.Window):
                 if OSX and direction == MoveResize.MOVE and button == 1:
                     try:
                         from xpra.platform.darwin.gdk3_bindings import perform_window_drag_with_remembered_event
-                        max_age = getattr(self._client, "catlink_window_drag_remembered_event_max_age", 3.0)
-                        native_move_drag = perform_window_drag_with_remembered_event(self.get_window(), max_age)
+                        native_move_drag = perform_window_drag_with_remembered_event(
+                            self.get_window(),
+                            CATLINK_WINDOW_DRAG_REMEMBERED_EVENT_MAX_AGE,
+                        )
                     except ImportError:
                         pass
                     except Exception:
