@@ -39,6 +39,7 @@ cdef extern from "transparency_glue.h":
     void clearRememberedButtonPressEvent()
     BOOL performWindowDragWithRememberedEvent(NSWindow *window, double maxAge)
     void orderWindowFront(NSWindow *window)
+    int getWindowNumber(NSWindow *window)
 
 
 cdef extern from "gtk-3.0/gdk/quartz/gdkquartz-cocoa-access.h":
@@ -91,3 +92,7 @@ def perform_window_drag_with_remembered_event(pywindow, double max_age=1.0) -> b
 def order_window_front(pywindow) -> None:
     cdef NSWindow *window = get_nswindow(pywindow)
     orderWindowFront(window)
+
+def get_nswindow_number(pywindow) -> int:
+    cdef NSWindow *window = get_nswindow(pywindow)
+    return getWindowNumber(window)

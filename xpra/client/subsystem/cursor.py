@@ -11,7 +11,7 @@ from importlib.util import find_spec
 
 from xpra.common import BACKWARDS_COMPATIBLE
 from xpra.net.common import Packet
-from xpra.util.str_fn import Ellipsizer
+from xpra.util.str_fn import Ellipsizer, bytestostr
 from xpra.util.objects import typedict
 from xpra.util.env import envbool
 from xpra.client.base.stub import StubClientMixin
@@ -106,6 +106,15 @@ class CursorClient(StubClientMixin):
             elif encoding != "raw":
                 log.warn(f"Warning: invalid cursor encoding: {encoding}")
                 return
+        if log.is_debug_enabled():
+            cursor_name = bytestostr(new_cursor[9]) if isinstance(new_cursor, (list, tuple)) and len(new_cursor) >= 10 else ""
+            active = []
+            for wid, window in self._id_to_window.items():
+                buttons = tuple(getattr(window, "button_pressed", {}) or ())
+                moveresize = getattr(window, "moveresize_event", None)
+                if buttons or moveresize:
+                    active.append((wid, buttons, bool(moveresize)))
+            log("cursor packet: default=%s name=%s active-windows=%s", setdefault, cursor_name, active)
         if setdefault:
             log("setting default cursor=%s", Ellipsizer(new_cursor))
             self.default_cursor_data = new_cursor

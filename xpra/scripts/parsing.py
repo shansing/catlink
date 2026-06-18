@@ -998,7 +998,6 @@ def parse_command_line(cmdline: list[str], defaults: XpraConfig):
         "display": defaults.display,
         "wm-name": defaults.wm_name,
         "download-path": defaults.download_path,
-        "catlink-window-drag-remembered-event-max-age": defaults.catlink_window_drag_remembered_event_max_age,
         "catlink-im-passthrough-shortcut": defaults.catlink_im_passthrough_shortcut,
     }
     gettext = getattr(optparse, "gettext", lambda x: x)

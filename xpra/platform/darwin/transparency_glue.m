@@ -60,6 +60,13 @@ void orderWindowFront(NSWindow *window) {
     [window makeKeyAndOrderFront:nil];
 }
 
+int getWindowNumber(NSWindow *window) {
+    if (!window) {
+        return 0;
+    }
+    return (int) [window windowNumber];
+}
+
 void setOpaque(NSWindow *window, BOOL opaque) {
 	[window setOpaque:opaque];
 }

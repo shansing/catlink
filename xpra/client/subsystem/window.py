@@ -25,7 +25,6 @@ from xpra.net.common import Packet
 from xpra.exit_codes import ExitCode, ExitValue
 from xpra.common import WINDOW_NOT_FOUND, WINDOW_DECODE_SKIPPED, WINDOW_DECODE_ERROR, noerr
 from xpra.platform.paths import get_icon_filename, get_python_execfile_command
-from xpra.util.parsing import FALSE_OPTIONS
 from xpra.client.gui.window_border import WindowBorder
 from xpra.util.io import find_libexec_command
 from xpra.util.thread import start_thread
@@ -276,7 +275,6 @@ class WindowClient(StubClientMixin):
 
         self.window_close_action: str = "forward"
         self.modal_windows: bool = True
-        self.catlink_window_drag_remembered_event_max_age: float = 3.0
         self.catlink_dock_policy = None
 
         self._pid_to_signalwatcher = {}
@@ -316,10 +314,6 @@ class WindowClient(StubClientMixin):
             self.pixel_depth = 0
 
         self.windows_enabled = opts.windows
-        self.catlink_window_drag_remembered_event_max_age = max(
-            0.0,
-            float(getattr(opts, "catlink_window_drag_remembered_event_max_age", 3.0) or 3.0),
-        )
         if self.windows_enabled:
             if opts.window_close not in ("forward", "ignore", "disconnect", "shutdown", "auto"):
                 self.window_close_action = "forward"
