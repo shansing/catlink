@@ -93,6 +93,22 @@ OSX_CURSOR_ALIASES = {
     "bottom_left_corner": ("sw-resize", "nesw-resize"),
 }
 
+WIN32_CURSOR_TYPE_ALIASES = {
+    "size_ver": ("SB_V_DOUBLE_ARROW", "DOUBLE_ARROW"),
+    "size_hor": ("SB_H_DOUBLE_ARROW", "DOUBLE_ARROW"),
+    "size_fdiag": ("TOP_LEFT_CORNER", "BOTTOM_RIGHT_CORNER"),
+    "size_bdiag": ("TOP_RIGHT_CORNER", "BOTTOM_LEFT_CORNER"),
+    "top_side": ("TOP_SIDE", "SB_V_DOUBLE_ARROW"),
+    "bottom_side": ("BOTTOM_SIDE", "SB_V_DOUBLE_ARROW"),
+    "left_side": ("LEFT_SIDE", "SB_H_DOUBLE_ARROW"),
+    "right_side": ("RIGHT_SIDE", "SB_H_DOUBLE_ARROW"),
+    "top_left_corner": ("TOP_LEFT_CORNER",),
+    "bottom_right_corner": ("BOTTOM_RIGHT_CORNER",),
+    "top_right_corner": ("TOP_RIGHT_CORNER",),
+    "bottom_left_corner": ("BOTTOM_LEFT_CORNER",),
+}
+
+
 VREFRESH = envint("XPRA_VREFRESH", 0)
 
 inject_css_overrides()
@@ -108,6 +124,21 @@ def get_local_cursor(cursor_name: str):
     cursor_names = (cursor_name,)
     if OSX:
         cursor_names = OSX_CURSOR_ALIASES.get(cursor_name, ()) + cursor_names
+    if WIN32:
+        gdk_cursor = None
+        for name in WIN32_CURSOR_TYPE_ALIASES.get(cursor_name, ()):
+            gdk_cursor = cursor_types.get(name)
+            if gdk_cursor is not None:
+                cursorlog("win32 gdk_cursor(%s -> %s)=%s", cursor_name, name, gdk_cursor)
+                try:
+                    cursor = Gdk.Cursor.new_for_display(display, gdk_cursor)
+                    cursorlog("Cursor.new_for_display(%s, %s)=%s", display, gdk_cursor, cursor)
+                    if cursor:
+                        return cursor
+                except TypeError as e:
+                    log("new_Cursor_for_display(%s, %s)", display, gdk_cursor, exc_info=True)
+                    if first_time("cursor:%s" % name):
+                        log.error("Error creating cursor %s: %s", name, e)
     cursor = None
     for name in cursor_names:
         try:
@@ -975,7 +1006,8 @@ class GTKXpraClient(GObjectXpraClient, UIXpraClient):
             self.set_windows_cursor([w], cursor_data)
 
     def set_windows_cursor(self, windows, cursor_data) -> None:
-        cursorlog(f"set_windows_cursor({windows}, args[{len(cursor_data)}])")
+        cursor_name = bytestostr(cursor_data[9]) if cursor_data and len(cursor_data) >= 10 else ""
+        cursorlog("set_windows_cursor(%s, args[%i]) name=%s", windows, len(cursor_data), cursor_name)
         cursor = None
         if cursor_data:
             try:
