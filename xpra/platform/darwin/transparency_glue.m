@@ -77,6 +77,18 @@ void setClearBackgroundColor(NSWindow *window) {
 void setBackgroundColor(NSWindow *window, NSColor *color) {
 	[window setBackgroundColor:color];
 }
+void invalidateShadow(NSWindow *window) {
+    if (!window) {
+        return;
+    }
+    [window invalidateShadow];
+}
+void setHasShadow(NSWindow *window, BOOL hasShadow) {
+    if (!window) {
+        return;
+    }
+    [window setHasShadow:hasShadow];
+}
 
 float getBackingScaleFactor(NSWindow *window) {
     NSScreen *screen = [window screen];

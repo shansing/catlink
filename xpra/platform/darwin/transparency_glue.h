@@ -9,6 +9,8 @@
 
 void setOpaque(NSWindow *window, BOOL opaque);
 void setClearBackgroundColor(NSWindow *window);
+void invalidateShadow(NSWindow *window);
+void setHasShadow(NSWindow *window, BOOL hasShadow);
 void orderWindowFront(NSWindow *window);
 int getWindowNumber(NSWindow *window);
 

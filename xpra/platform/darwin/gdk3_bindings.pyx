@@ -75,6 +75,11 @@ def enable_transparency(pywindow) -> None:
     setClearBackgroundColor(window)
     setOpaque(window, 0)
 
+def set_has_shadow(pywindow, bool has_shadow) -> None:
+    cdef NSWindow *window = get_nswindow(pywindow)
+    setHasShadow(window, has_shadow)
+    invalidateShadow(window)
+
 def get_backing_scale_factor(pywindow) -> float:
     cdef NSWindow *window = get_nswindow(pywindow)
     return getBackingScaleFactor(window)
