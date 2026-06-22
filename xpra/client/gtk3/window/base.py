@@ -49,6 +49,20 @@ eventslog = Logger("events")
 geomlog = Logger("geometry")
 alphalog = Logger("alpha")
 
+OSX_FLOATING_SHADOW_WINDOW_TYPES = {
+    "DIALOG",
+    "MENU",
+    "TOOLBAR",
+    "SPLASH",
+    "UTILITY",
+    "DROPDOWN_MENU",
+    "POPUP_MENU",
+    "TOOLTIP",
+    "NOTIFICATION",
+    "COMBO",
+    "DND",
+}
+
 CATLINK_WINDOW_DRAG_REMEMBERED_EVENT_MAX_AGE = envfloat("CATLINK_WINDOW_DRAG_REMEMBERED_EVENT_MAX_AGE", 3.0)
 
 HAS_X11_BINDINGS = False
@@ -526,6 +540,7 @@ class GTKClientWindowBase(ClientWindowBase, Gtk.Window):
     def on_realize(self, widget) -> None:
         eventslog("on_realize(%s) gdk window=%s", widget, self.get_window())
         add_window_hooks(self)
+        self.disable_osx_alpha_floating_shadow()
         cb = self.on_realize_cb
         self.on_realize_cb = {}
         for callback, args in cb.values():
@@ -536,6 +551,33 @@ class GTKClientWindowBase(ClientWindowBase, Gtk.Window):
             self._client.request_frame_extents(self)
         if self.group_leader:
             self.get_window().set_group(self.group_leader)
+
+    def is_osx_alpha_floating_window(self) -> bool:
+        if not OSX or not self._has_alpha:
+            return False
+        metadata = self._metadata
+        window_types = metadata.strtupleget("window-type")
+        return (
+            self._override_redirect
+            or not self.get_decorated()
+            or metadata.intget("transient-for", 0) > 0
+            or metadata.boolget("skip-taskbar", False)
+            or is_popup(metadata)
+            or bool(OSX_FLOATING_SHADOW_WINDOW_TYPES.intersection(window_types))
+        )
+
+    def disable_osx_alpha_floating_shadow(self) -> None:
+        if not self.is_osx_alpha_floating_window():
+            return
+        gdkwindow = self.get_window()
+        if not gdkwindow:
+            return
+        try:
+            from xpra.platform.darwin.gdk3_bindings import set_has_shadow
+            set_has_shadow(gdkwindow, False)
+            eventslog("disabled macOS shadow for alpha floating window %#x", self.wid)
+        except Exception as e:
+            eventslog("failed to disable macOS shadow for window %#x: %s", self.wid, e, exc_info=True)
 
     def on_unrealize(self, widget) -> None:
         eventslog("on_unrealize(%s)", widget)
