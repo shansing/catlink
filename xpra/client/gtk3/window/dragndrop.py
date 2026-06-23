@@ -81,7 +81,17 @@ class DragNDropWindow(GtkStubWindow):
 
     def drag_got_data_cb(self, wid: int, context, x: int, y: int, selection, info, time: int) -> None:
         log("drag_got_data_cb(%#x, %s, %i, %i, %r, %s, %i)", wid, context, x, y, selection, info, time)
+        drag_finished = False
+
+        def finish_drag(success: bool) -> None:
+            nonlocal drag_finished
+            if drag_finished:
+                return
+            drag_finished = True
+            context.finish(success, False, time)
+
         if self.is_readonly():
+            finish_drag(False)
             return
         targets = list(x.name() for x in context.list_targets())
         actions = context.get_actions()
@@ -100,6 +110,7 @@ class DragNDropWindow(GtkStubWindow):
         log("drag_got_data_cb selection: data type=%s, format=%s, length=%s, target=%s, text=%s, uris=%s",
             dtype, fmt, length, target, text, uris)
         if not uris:
+            finish_drag(False)
             return
         filelist = []
         for uri in uris:
@@ -117,6 +128,9 @@ class DragNDropWindow(GtkStubWindow):
                 continue
             filelist.append(abspath)
         log("drag_got_data_cb: will try to upload: %s", csv(filelist))
+        if not filelist:
+            finish_drag(False)
+            return
         pending = set(filelist)
 
         def file_done(filename: str) -> None:
@@ -129,26 +143,38 @@ class DragNDropWindow(GtkStubWindow):
             # when all the files have been loaded / failed,
             # finish the drag and drop context so the source knows we're done with them:
             if not pending:
-                context.finish(True, False, time)
+                finish_drag(True)
 
         # we may want to only process a limited number of files "at the same time":
         RIM_SERVER=os.getenv("RIM_SERVER","")
         if RIM_SERVER != "":
             target_xid = self._metadata.get("xid")
+            success = False
 
             # force update pointer position
             self._file_handler.poll_pointer()
 
             import requests
-            resp = requests.get(
-                url =f"{RIM_SERVER}/dnd/drop",
-                verify = False,
-                params = {
-                    "file_path": filelist,
-                    "client_id": os.getenv("LZC_CLIENT_ID"),
-                    "win": target_xid,
-                })
-            log.info(f"DND DROP RESULT {resp} win:{target_xid}")
+            try:
+                resp = requests.get(
+                    url =f"{RIM_SERVER}/dnd/drop",
+                    verify = False,
+                    timeout = 5,
+                    params = {
+                        "file_path": filelist,
+                        "client_id": os.getenv("LZC_CLIENT_ID"),
+                        "win": target_xid,
+                    })
+                success = resp.ok
+                if success:
+                    log.info(f"DND DROP RESULT {resp} win:{target_xid}")
+                else:
+                    log.warn(f"Warning: DND DROP failed {resp} win:{target_xid}")
+            except Exception as e:
+                log.warn("Warning: DND DROP request failed:")
+                log.warn(" %s", e)
+            finally:
+                finish_drag(success)
         else:
             for filename in filelist:
                 self.drag_process_file(filename, file_done)
