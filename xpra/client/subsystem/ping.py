@@ -28,6 +28,8 @@ PING_TIMEOUT: int = envint("XPRA_PING_TIMEOUT", 60)
 MIN_PING_TIMEOUT: int = envint("XPRA_MIN_PING_TIMEOUT", 2)
 MAX_PING_TIMEOUT: int = envint("XPRA_MAX_PING_TIMEOUT", 10)
 SWALLOW_PINGS: bool = envbool("XPRA_SWALLOW_PINGS", False)
+CATLINK_WARN_PING_MS: int = envint("CATLINK_WARN_PING_MS", 2000)
+CATLINK_WARN_PING_INTERVAL_MS: int = envint("CATLINK_WARN_PING_INTERVAL_MS", 10000)
 
 
 class PingClient(StubClientMixin):
@@ -47,6 +49,8 @@ class PingClient(StubClientMixin):
         self.ping_timer: int = 0
         self.ping_echo_timers: dict[int, int] = {}
         self.ping_echo_timeout_timer = 0
+        self.last_ping_late_warning_time = 0.0
+        self.last_ping_latency_warning_time = 0.0
 
     def init(self, opts) -> None:
         self.pings = opts.pings
@@ -125,6 +129,14 @@ class PingClient(StubClientMixin):
             if not self.ping_echo_timeout_timer:
                 self.ping_echo_timeout_timer = GLib.timeout_add(PING_TIMEOUT * 1000,
                                                                 self.check_echo_timeout, ping_sent_time)
+            now = monotonic()
+            waited_ms = round(now * 1000 - ping_sent_time) if ping_sent_time else -1
+            last_echo_age_ms = round(now * 1000 - self.last_ping_echoed_time) if self.last_ping_echoed_time else -1
+            warning_due = (now - self.last_ping_late_warning_time) * 1000 >= CATLINK_WARN_PING_INTERVAL_MS
+            if last != self._server_ok or warning_due:
+                self.last_ping_late_warning_time = now
+                log.warn("Warning: server ping echo is late: waited=%sms pending=%s last-echo-age=%sms",
+                         waited_ms, len(self.ping_echo_timers), last_echo_age_ms)
         else:
             self.cancel_ping_echo_timeout_timer()
         log("check_server_echo(%s) last=%s, server_ok=%s (last_ping_echoed_time=%s)",
@@ -147,6 +159,9 @@ class PingClient(StubClientMixin):
         expired = self.last_ping_echoed_time < ping_time
         log(f"check_echo_timeout({ping_time}) last={self.last_ping_echoed_time}, {expired=}")
         if expired:
+            last_echo_age_ms = round(monotonic() * 1000 - self.last_ping_echoed_time) if self.last_ping_echoed_time else -1
+            log.warn("Warning: server ping timeout: waited=%ss pending=%s last-echo-age=%sms",
+                     PING_TIMEOUT, len(self.ping_echo_timers), last_echo_age_ms)
             # no point trying to use disconnect_and_quit() to tell the server here..
             self.warn_and_quit(ExitCode.CONNECTION_LOST,
                                "server ping timeout - waited %s seconds without a response" % PING_TIMEOUT)
@@ -186,6 +201,13 @@ class PingClient(StubClientMixin):
         self.server_load = l1, l2, l3
         if cl >= 0:
             self.client_ping_latency.append((monotonic(), cl / 1000.0))
+        server_ping_ms = round(1000 * server_ping_latency)
+        now = monotonic()
+        if server_ping_ms >= CATLINK_WARN_PING_MS and (
+                (now - self.last_ping_latency_warning_time) * 1000 >= CATLINK_WARN_PING_INTERVAL_MS):
+            self.last_ping_latency_warning_time = now
+            log.warn("Warning: high server ping latency: latency=%sms client-latency=%sms pending=%s",
+                     server_ping_ms, cl, len(self.ping_echo_timers))
         log("ping echo server load=%s, measured client latency=%sms", self.server_load, cl)
 
     def _process_ping(self, packet: Packet) -> None:

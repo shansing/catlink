@@ -6,6 +6,7 @@
 
 import os
 import struct
+from time import monotonic
 from typing import Any, Final
 from collections.abc import Callable, Iterable, Sequence
 
@@ -15,7 +16,7 @@ from xpra.net.common import Packet, PacketElement
 from xpra.os_util import POSIX
 from xpra.util.objects import typedict
 from xpra.util.str_fn import csv, Ellipsizer, repr_ellipsized, bytestostr, hexstr
-from xpra.util.env import envint
+from xpra.util.env import envbool, envint
 from xpra.platform.features import CLIPBOARDS as PLATFORM_CLIPBOARDS, CLIPBOARD_GREEDY
 from xpra.clipboard.common import get_format_size, sizeof_long, sizeof_short, compile_filters
 from xpra.clipboard.targets import _filter_targets, must_discard, DISCARD_EXTRA_TARGETS, DISCARD_TARGETS
@@ -38,6 +39,8 @@ def _get_clipboards() -> Sequence[str]:
 
 CLIPBOARDS = _get_clipboards()
 TEST_DROP_CLIPBOARD_REQUESTS = envint("XPRA_TEST_DROP_CLIPBOARD")
+CATLINK_CLIPBOARD_OBSERVE = envbool("CATLINK_CLIPBOARD_OBSERVE", True)
+CATLINK_CLIPBOARD_OBSERVE_MAX_AGE_MS = envint("CATLINK_CLIPBOARD_OBSERVE_MAX_AGE_MS", 60000)
 
 # targets we never wish to handle:
 # targets some applications are known to request,
@@ -61,6 +64,7 @@ class ClipboardProtocolHelperCore:
         self.filter_res = compile_filters(d.strtupleget("filters"))
         self._clipboard_request_counter: int = 0
         self._clipboard_outstanding_requests: dict[int, tuple[int, str, str]] = {}
+        self._clipboard_request_started: dict[int, float] = {}
         self._local_to_remote: dict[str, str] = {}
         self._remote_to_local: dict[str, str] = {}
         self.init_translation(kwargs)
@@ -144,9 +148,21 @@ class ClipboardProtocolHelperCore:
     def cleanup(self) -> None:
         """ during cleanup, stop sending packets """
         self.send = noop
+        self._clipboard_request_started = {}
         for x in self._clipboard_proxies.values():
             x.cleanup()
         self._clipboard_proxies = {}
+
+    def _prune_clipboard_request_started(self, now: float) -> None:
+        if CATLINK_CLIPBOARD_OBSERVE_MAX_AGE_MS <= 0 or not self._clipboard_request_started:
+            return
+        cutoff = now - CATLINK_CLIPBOARD_OBSERVE_MAX_AGE_MS / 1000
+        expired = tuple(k for k, v in self._clipboard_request_started.items() if v < cutoff)
+        for request_id in expired:
+            self._clipboard_request_started.pop(request_id, None)
+        if expired:
+            log("clipboard request observe cleanup: expired=%s pending=%s max-age=%sms",
+                len(expired), len(self._clipboard_request_started), CATLINK_CLIPBOARD_OBSERVE_MAX_AGE_MS)
 
     def client_reset(self) -> None:
         """ overriden in subclasses to try to reset the state """
@@ -378,42 +394,83 @@ class ClipboardProtocolHelperCore:
         request_id = packet.get_u64(1)
         selection = packet.get_str(2)
         target = packet.get_str(3)
+        start = monotonic()
+        self._prune_clipboard_request_started(start)
+        self._clipboard_request_started[request_id] = start
 
-        def no_contents():
+        def no_contents(reason=""):
+            elapsed_ms = round(1000 * (monotonic() - self._clipboard_request_started.pop(request_id, start)))
+            if CATLINK_CLIPBOARD_OBSERVE:
+                log("clipboard request empty: id=%s selection=%s target=%s elapsed=%sms reason=%s",
+                    request_id, selection, target, elapsed_ms, reason or "none")
             self.send("clipboard-contents-none", request_id, selection)
 
         if must_discard(target):
             log("invalid target '%s'", target)
-            no_contents()
+            no_contents("discarded-target")
             return
         name = self.remote_to_local(selection)
         log("process clipboard request, request_id=%s, selection=%s, local name=%s, target=%s",
             request_id, selection, name, target)
+        if CATLINK_CLIPBOARD_OBSERVE:
+            log("clipboard request received: id=%s selection=%s local=%s target=%s",
+                request_id, selection, name, target)
         proxy = self._clipboard_proxies.get(name)
         if proxy is None:
             # err, we were asked about a clipboard we don't handle...
             log.error("Error: clipboard request for '%s' (no proxy, ignored)", name)
-            no_contents()
+            no_contents("no-proxy")
             return
         if not proxy.is_enabled():
             log.warn("Warning: ignoring clipboard request for '%s' (disabled)", name)
-            no_contents()
+            no_contents("disabled")
             return
         if not proxy._can_send:
             log("request for %s but sending is disabled, sending 'none' back", name)
-            no_contents()
+            no_contents("sending-disabled")
             return
         if TEST_DROP_CLIPBOARD_REQUESTS > 0 and (request_id % TEST_DROP_CLIPBOARD_REQUESTS) == 0:
+            self._clipboard_request_started.pop(request_id, None)
             log.warn("clipboard request %s dropped for testing!", request_id)
             return
 
-        def got_contents(dtype="STRING", dformat=0, data=b"") -> None:
-            self.proxy_got_contents(request_id, selection, target, dtype, dformat, data)
+        callback_failed = False
 
-        proxy.get_contents(target, got_contents)
+        def got_contents(dtype="STRING", dformat=0, data=b"") -> None:
+            nonlocal callback_failed
+            try:
+                self.proxy_got_contents(request_id, selection, target, dtype, dformat, data)
+            except Exception:
+                callback_failed = True
+                log.error("Error: clipboard callback failed")
+                log.error(" request id=%s, selection=%s, target=%s", request_id, selection, target)
+                raise
+
+        try:
+            proxy.get_contents(target, got_contents)
+        except Exception as e:
+            if callback_failed:
+                raise
+            log.warn("Warning: clipboard get_contents failed")
+            log.warn(" request id=%s, selection=%s, target=%s", request_id, selection, target)
+            log.estr(e)
+            self._clipboard_request_started.pop(request_id, None)
+            raise
 
     def proxy_got_contents(self, request_id: int, selection: str, target: str, dtype: str, dformat: int, data) -> None:
-        def no_contents():
+        start = self._clipboard_request_started.pop(request_id, None)
+        elapsed_ms = round(1000 * (monotonic() - start)) if start else -1
+
+        def datalen(value) -> int:
+            try:
+                return len(value or "")
+            except TypeError:
+                return -1
+
+        def no_contents(reason=""):
+            if CATLINK_CLIPBOARD_OBSERVE:
+                log("clipboard request empty: id=%s selection=%s target=%s elapsed=%sms reason=%s",
+                    request_id, selection, target, elapsed_ms, reason or "none")
             self.send("clipboard-contents-none", request_id, selection)
 
         dtype = bytestostr(dtype)
@@ -422,7 +479,7 @@ class ClipboardProtocolHelperCore:
                 request_id, selection, target,
                 dtype, dformat, type(data), len(data or ""), hexstr((data or "")[:200]))
         if dtype is None or data is None or (dformat == 0 and not data):
-            no_contents()
+            no_contents("empty-data")
             return
         truncated = 0
         if self.max_clipboard_send_size > 0:
@@ -437,10 +494,15 @@ class ClipboardProtocolHelperCore:
                 (dtype, dformat, Ellipsizer(data)), Ellipsizer(munged))
         wire_encoding, wire_data = munged
         if wire_encoding is None:
-            no_contents()
+            no_contents("wire-encoding-none")
             return
         wire_data = self._may_compress(dtype, dformat, wire_data)
         if wire_data is not None:
+            data_len = datalen(data)
+            wire_len = datalen(wire_data)
+            if CATLINK_CLIPBOARD_OBSERVE:
+                log("clipboard request contents: id=%s selection=%s target=%s dtype=%s size=%s wire-size=%s elapsed=%sms truncated=%s",
+                    request_id, selection, target, dtype, data_len, wire_len, elapsed_ms, truncated)
             packet = ["clipboard-contents", request_id, selection,
                       dtype, dformat, wire_encoding, wire_data, truncated]
             self.send(*packet)
