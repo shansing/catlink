@@ -17,11 +17,13 @@ from xpra.net.common import Packet, PacketElement
 from xpra.net import compression
 from xpra.util.parsing import parse_simple_dict, TRUE_OPTIONS, FALSE_OPTIONS
 from xpra.util.objects import typedict
+from xpra.util.env import envbool
 from xpra.log import Logger
 
 log = Logger("clipboard")
 
 CLIPBOARD_CLASS = os.environ.get("XPRA_CLIPBOARD_CLASS", "")
+CATLINK_CLIPBOARD_OBSERVE = envbool("CATLINK_CLIPBOARD_OBSERVE", True)
 
 
 def get_clipboard_helper_classes(clipboard_type: str) -> list[type]:
@@ -305,6 +307,19 @@ class ClipboardClient(StubClientMixin):
         for i, v in enumerate(packet):
             if isinstance(v, compression.Compressible):
                 packet[i] = self.compressible_item(v)
+        if CATLINK_CLIPBOARD_OBSERVE and packet_type in ("clipboard-contents", "clipboard-contents-none"):
+            request_id = packet[0] if packet else -1
+            selection = packet[1] if len(packet) > 1 else ""
+            size = 0
+            if packet_type == "clipboard-contents" and len(packet) > 6:
+                try:
+                    size = len(packet[6] or "")
+                except TypeError:
+                    size = -1
+            log("clipboard send queued: type=%s id=%s selection=%s size=%s priority-queue=%s ordinary-queue=%s",
+                packet_type, request_id, selection, size,
+                len(getattr(self, "_priority_packets", ())),
+                len(getattr(self, "_ordinary_packets", ())))
         self.send_now(packet_type, *packet)
 
     def clipboard_progress(self, local_requests: int, remote_requests: int) -> None:

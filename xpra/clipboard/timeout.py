@@ -67,8 +67,8 @@ class ClipboardTimeoutHelper(ClipboardProtocolHelperCore):
         try:
             timer, selection, target = self._clipboard_outstanding_requests.pop(request_id)
         except KeyError:
-            log.warn("Warning: request id %i not found", request_id)
-            log.warn(" already timed out or duplicate reply")
+            log.warn("Warning: clipboard request id %i not found", request_id)
+            log.warn(" clipboard request already timed out or duplicate reply")
             return
         finally:
             self.progress()
