@@ -19,6 +19,7 @@ from xpra.os_util import gi_import
 from xpra.util.child_reaper import reaper_cleanup
 from xpra.util.objects import typedict
 from xpra.util.str_fn import Ellipsizer, repr_ellipsized
+from xpra.util.parsing import str_to_bool
 from xpra.util.env import envint, envbool
 from xpra.exit_codes import ExitCode, ExitValue
 from xpra.client.base import features
@@ -105,6 +106,7 @@ class UIXpraClient(ClientBaseClass):
         self.client_supports_sharing = opts.sharing is True
         self.client_lock = opts.lock is True
         self.headerbar = opts.headerbar
+        self.catlink_im_preedit = str_to_bool(opts.catlink_im_preedit, False)
 
     def client_toolkit(self) -> str:
         raise NotImplementedError()
