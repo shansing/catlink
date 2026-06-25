@@ -64,6 +64,9 @@ OSX_FLOATING_SHADOW_WINDOW_TYPES = {
 }
 
 CATLINK_WINDOW_DRAG_REMEMBERED_EVENT_MAX_AGE = envfloat("CATLINK_WINDOW_DRAG_REMEMBERED_EVENT_MAX_AGE", 3.0)
+CATLINK_CLAMP_WINDOW_TO_VISIBLE_AREA = envbool("CATLINK_CLAMP_WINDOW_TO_VISIBLE_AREA", True)
+CATLINK_WINDOW_VISIBLE_AREA_MARGIN = envint("CATLINK_WINDOW_VISIBLE_AREA_MARGIN", 0)
+CATLINK_WINDOW_VISIBLE_AREA_GRACE_SECONDS = envfloat("CATLINK_WINDOW_VISIBLE_AREA_GRACE_SECONDS", 2.0)
 
 HAS_X11_BINDINGS = False
 
@@ -188,6 +191,16 @@ class GTKClientWindowBase(ClientWindowBase, Gtk.Window):
         self.moveresize_event = None
         self.osx_resize_cursor_data = ()
         self.osx_resize_cursor_timer = 0
+        # Catlink workaround: when re-attaching to an existing server session,
+        # the server may replay stale geometry from a previous client display.
+        # Server-side fixes are harder to deploy, so clamp those early moves client-side.
+        self.catlink_clamp_pending = bool(
+            CATLINK_CLAMP_WINDOW_TO_VISIBLE_AREA and not getattr(client, "completed_startup", False)
+        )
+        self.catlink_clamp_until = (
+            monotonic() + max(0, CATLINK_WINDOW_VISIBLE_AREA_GRACE_SECONDS)
+            if self.catlink_clamp_pending else 0
+        )
         # only set this initially:
         # (so the server can't make us kill just any pid!)
         watcher_pid = metadata.intget("watcher-pid", 0)
@@ -466,6 +479,73 @@ class GTKClientWindowBase(ClientWindowBase, Gtk.Window):
                     geomlog("adjusted_position(%i, %i)=%i, %i", ox, oy, x, y)
                     return x, y
         return ox, oy
+
+    def clamp_initial_position_to_visible_area(self, x: int, y: int, w: int, h: int) -> tuple[int, int]:
+        if self.is_OR():
+            return x, y
+        ss = getattr(self._client, "_current_screen_sizes", None)
+        if ss and len(ss) == 1:
+            clamped = self.clamp_to_visible_monitors(x, y, w, h)
+            if clamped is not None:
+                return clamped
+        try:
+            screen_w, screen_h = self._client.get_root_size()
+        except (AttributeError, TypeError, ValueError):
+            return x, y
+        margin = max(0, CATLINK_WINDOW_VISIBLE_AREA_MARGIN)
+        if screen_w <= margin * 2 or screen_h <= margin * 2:
+            return x, y
+
+        def clamp_axis(pos: int, size: int, limit: int) -> int:
+            start = margin
+            end = limit - margin
+            if size >= end - start:
+                return start
+            return max(start, min(pos, end - size))
+
+        nx = clamp_axis(x, max(1, w), screen_w)
+        ny = clamp_axis(y, max(1, h), screen_h)
+        return nx, ny
+
+    def clamp_to_visible_monitors(self, x: int, y: int, w: int, h: int) -> tuple[int, int] | None:
+        ss = getattr(self._client, "_current_screen_sizes", None)
+        if not ss or len(ss) != 1:
+            return None
+        monitors = ss[0][5]
+        if not monitors:
+            return None
+        try:
+            from xpra.util.rectangle import rectangle
+        except ImportError:
+            return None
+        wrect = rectangle(x, y, w, h)
+        rects = [wrect]
+        pixels_in_monitor: dict[int, int] = {}
+        for i, monitor in enumerate(monitors):
+            _plug_name, mx, my, mw, mh = monitor[:5]
+            new_rects = []
+            for rect in rects:
+                new_rects += rect.subtract(mx, my, mw, mh)
+            rects = new_rects
+            if not rects:
+                return x, y
+            inter = wrect.intersection(mx, my, mw, mh)
+            if inter:
+                pixels_in_monitor[inter.width * inter.height] = i
+        if not pixels_in_monitor:
+            i = 0
+        else:
+            i = pixels_in_monitor[max(pixels_in_monitor.keys())]
+        _, mx, my, mw, mh = monitors[i][:5]
+        if w >= mw:
+            nx = mx
+        else:
+            nx = max(mx, min(x, mx + mw - w))
+        if h >= mh:
+            ny = my
+        else:
+            ny = max(my, min(y, my + mh - h))
+        return nx, ny
 
     def calculate_window_offset(self, wx: int, wy: int, ww: int, wh: int) -> tuple[int, int] | None:
         ss = self._client._current_screen_sizes
@@ -1499,6 +1579,17 @@ class GTKClientWindowBase(ClientWindowBase, Gtk.Window):
         x, y = self.adjusted_position(x, y)
         w = max(1, w)
         h = max(1, h)
+        clamp_pending = getattr(self, "catlink_clamp_pending", False)
+        clamp_until = getattr(self, "catlink_clamp_until", 0)
+        if CATLINK_CLAMP_WINDOW_TO_VISIBLE_AREA and clamp_pending and clamp_until:
+            # Keep this workaround narrow: only windows created before startup-complete
+            # are eligible, and only for a short grace period after creation.
+            now = monotonic()
+            if now <= clamp_until:
+                nx, ny = self.clamp_initial_position_to_visible_area(x, y, w, h)
+                x, y = nx, ny
+            else:
+                self.catlink_clamp_pending = False
         if self.window_offset:
             x += self.window_offset[0]
             y += self.window_offset[1]
