@@ -11,11 +11,30 @@ from typing import Callable, Optional, Tuple
 import requests
 import os
 import sys
+from threading import Thread
 
 typedict = Dict[str, Any]
 log = Logger("client", "window", "im")
 
 RIM_SERVER=os.getenv("RIM_SERVER")
+requests.packages.urllib3.disable_warnings()
+im_session = requests.Session()
+
+def parse_timeout_env(name: str, default: Tuple[float, float]) -> Tuple[float, float]:
+    value = os.getenv(name)
+    if not value:
+        return default
+    try:
+        parts = [part.strip() for part in value.split(",", 1)]
+        connect_timeout = float(parts[0])
+        read_timeout = float(parts[1]) if len(parts) > 1 else connect_timeout
+        return connect_timeout, read_timeout
+    except Exception as e:
+        log.warn("Warning: invalid %s=%r, using default %s: %s", name, value, default, e)
+        return default
+
+IM_PREEDIT_TIMEOUT = parse_timeout_env("IM_PREEDIT_TIMEOUT", (5, 5))
+IM_COMMIT_TIMEOUT = parse_timeout_env("IM_COMMIT_TIMEOUT", (10, 10))
 
 WIN32: bool = sys.platform.startswith("win")
 
@@ -31,6 +50,7 @@ class IMEnhancedWindow(GtkStubWindow):
     """无冲突方案：复用KeyboardWindow回调，不新增信号绑定"""
     def init_window(self, client, metadata: typedict, client_props: typedict) -> None:
         self._client = client
+        self._catlink_im_preedit = bool(getattr(client, "catlink_im_preedit", False))
         self.im_context = Gtk.IMMulticontext()
         # 3. 绑定输入法完整信号集（本地程序默认绑定，缺一不可）
         self.im_context.connect("commit", self._on_im_commit)
@@ -298,30 +318,60 @@ class IMEnhancedWindow(GtkStubWindow):
         pass
 
     def _on_im_preedit_end(self, im_context):
-        #log.info(f"predit end, win:{self._metadata.get('id')}")
-        pass
+        if not self._catlink_im_preedit:
+            return
+        self._send_im_preedit("", 0, False)
 
     def _on_im_preedit_changed(self, im_context):
-        im_context.get_preedit_string()
+        if not self._catlink_im_preedit:
+            return
+        text, _attrs, cursor_pos = im_context.get_preedit_string()
+        text = text or ""
+        if text and not cursor_pos:
+            cursor_pos = len(text)
+        self._send_im_preedit(text, cursor_pos or 0, bool(text))
 
+    def _send_im_preedit(self, text: str, cursor_pos: int, visible: bool) -> None:
+        if not RIM_SERVER:
+            return
+        try:
+            response = im_session.get(
+                url=f"{RIM_SERVER}/im/preedit",
+                verify=False,
+                timeout=IM_PREEDIT_TIMEOUT,
+                params={
+                    "text": text,
+                    "cursor": max(0, int(cursor_pos)),
+                    "visible": "1" if visible else "0",
+                    "xid": self._metadata.get("xid"),
+                },
+            )
+            response.raise_for_status()
+        except requests.exceptions.Timeout as e:
+            log.warn("Warning: timed out sending IM preedit: %s", e)
+        except Exception as e:
+            log.warn("Warning: failed to send IM preedit: %s", e)
 
     def _on_im_commit(self, im_context, text):
         """IM输入完成，发送到服务器"""
-        requests.packages.urllib3.disable_warnings()
-        requests.get(
-            url =f"{RIM_SERVER}/im/commit",
-            verify = False,
-            params = {
-                "text": text,
-                "xid": self._metadata.get("xid"),
-            })
+        try:
+            im_session.get(
+                url =f"{RIM_SERVER}/im/commit",
+                verify = False,
+                timeout=IM_COMMIT_TIMEOUT,
+                params = {
+                    "text": text,
+                    "xid": self._metadata.get("xid"),
+                })
+        except requests.exceptions.Timeout as e:
+            log.warn("Warning: timed out sending IM commit: %s", e)
+        except Exception as e:
+            log.warn("Warning: failed to send IM commit: %s", e)
 
         #log.info(f"IM提交文本：{text}")
         # if self._client and hasattr(self._window, 'wid') and self._window.wid:
         #     self._client.send_text_input(self._window.wid, text)
 
-
-from threading import Thread
 
 def subscribe_spots(url: str, callback: Callable[[Optional[int], Optional[int], Optional[Exception]], None]) -> Thread:
     """
