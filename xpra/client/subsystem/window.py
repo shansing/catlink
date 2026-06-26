@@ -1262,6 +1262,9 @@ class WindowClient(StubClientMixin):
                     backing.close()
 
             # now we can unmap it:
+            # GTK clients use this marker to keep per-window group resources
+            # alive across the immediate destroy-and-recreate reinit sequence.
+            setattr(window, "catlink_reinit_destroy", True)
             self.destroy_window(wid, window)
             # explicitly tell the server we have unmapped it:
             # (so it will reset the video encoders, etc)

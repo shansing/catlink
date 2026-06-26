@@ -1594,6 +1594,13 @@ class GTKXpraClient(GObjectXpraClient, UIXpraClient):
         # override so we can cleanup the group-leader if needed,
         from xpra.client.subsystem.window import WindowClient
         WindowClient.destroy_window(self, wid, window)
+        if getattr(window, "catlink_reinit_destroy", False):
+            # Reinit immediately creates a replacement ClientWindow for the same
+            # server window id and group ref. Keep the hidden group leader alive
+            # so the replacement can reuse it instead of closing a GDK object in
+            # the middle of the rebuild path.
+            log.info("preserving group leader for reinit of window %#x", wid)
+            return
         group_leader = window.group_leader
         if group_leader is None or not self._group_leader_wids:
             return

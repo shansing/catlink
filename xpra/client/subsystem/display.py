@@ -36,7 +36,7 @@ log = Logger("screen")
 workspacelog = Logger("client", "workspace")
 scalinglog = Logger("scaling")
 
-MONITOR_CHANGE_REINIT = envint("XPRA_MONITOR_CHANGE_REINIT")
+MONITOR_CHANGE_REINIT = envint("XPRA_MONITOR_CHANGE_REINIT", int(REINIT_WINDOWS))
 
 
 class DisplayClient(StubClientMixin):
@@ -509,9 +509,9 @@ class DisplayClient(StubClientMixin):
         self.update_screen_size()
         log("do_process_screen_size_change() MONITOR_CHANGE_REINIT=%s, REINIT_WINDOWS=%s",
             MONITOR_CHANGE_REINIT, REINIT_WINDOWS)
-        if MONITOR_CHANGE_REINIT and MONITOR_CHANGE_REINIT == "0":
-            return
-        if MONITOR_CHANGE_REINIT or REINIT_WINDOWS:
+        # Reinitialize windows when the platform policy allows it, unless the env
+        # knob explicitly disables it. Values above 1 force reinit on all platforms.
+        if (MONITOR_CHANGE_REINIT and REINIT_WINDOWS) or MONITOR_CHANGE_REINIT > 1:
             log.info("screen size change: will reinit the windows")
             self.reinit_windows()
             self.reinit_window_icons()
@@ -550,14 +550,13 @@ class DisplayClient(StubClientMixin):
             log("screen size unchanged")
             return
         root_w, root_h, sss = screen_settings[:3]
-        log.info("sending updated screen size to server: %sx%s", root_w, root_h)
         log_screen_sizes(root_w, root_h, sss)
+        root_w, root_h = screen_settings[:2]
+        ndesktops, desktop_names = screen_settings[3:5]
+        u_root_w, u_root_h = screen_settings[5:7]
+        xdpi, ydpi = screen_settings[7:9]
+        rrate, monitors = screen_settings[9:11]
         if "configure-display" in self.server_packet_types:
-            root_w, root_h = screen_settings[:2]
-            ndesktops, desktop_names = screen_settings[3:5]
-            u_root_w, u_root_h = screen_settings[5:7]
-            xdpi, ydpi = screen_settings[7:9]
-            rrate, monitors = screen_settings[9:11]
             attrs = {
                 "desktop-size": (root_w, root_h),
                 "desktop-size-unscaled": (u_root_w, u_root_h),
@@ -577,7 +576,20 @@ class DisplayClient(StubClientMixin):
             if rrate:
                 attrs["vrefresh"] = rrate
             log(f"configure-display: {attrs}")
+            log.info("sending updated screen size to server: %sx%s", root_w, root_h)
             self.send("configure-display", attrs)
+        elif self.server_randr:
+            # Older compatible servers may support runtime screen resizing without
+            # advertising the newer configure-display packet. Use the legacy packet
+            # so the server root is resized before windows move into the new monitor area.
+            log.info("sending updated screen size to server using legacy desktop_size: %sx%s", root_w, root_h)
+            self.send(
+                "desktop_size", root_w, root_h, sss,
+                ndesktops, desktop_names or (),
+                u_root_w, u_root_h, xdpi, ydpi, rrate, monitors,
+            )
+        else:
+            log.warn("not sending updated screen size: server does not support display resize")
         self._last_screen_settings = screen_settings
         # update the max packet size (may have gone up):
         self.set_max_packet_size()
