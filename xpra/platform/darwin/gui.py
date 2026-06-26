@@ -211,6 +211,26 @@ def get_workareas() -> Sequence[tuple[int, int, int, int]]:
     return workareas
 
 
+def get_monitor_geometries() -> Sequence[tuple[int, int, int, int]]:
+    # NSScreen uses a bottom-left origin. Normalize to GDK's top-left origin so
+    # gtk.info can use these rectangles as a replacement for broken GDK geometry.
+    screens = NSScreen.screens()
+    if not screens:
+        return ()
+    frames = [screen.frame() for screen in screens]
+    min_x = min(int(frame.origin.x) for frame in frames)
+    max_y = max(int(frame.origin.y + frame.size.height) for frame in frames)
+    geometries = []
+    for frame in frames:
+        x = int(frame.origin.x) - min_x
+        y = max_y - int(frame.origin.y + frame.size.height)
+        w = int(frame.size.width)
+        h = int(frame.size.height)
+        geometries.append((x, y, w, h))
+    log("get_monitor_geometries()=%s", geometries)
+    return tuple(geometries)
+
+
 def get_display_size() -> tuple[int, int]:
     Gdk = gi_import("Gdk")
     screen = Gdk.Screen.get_default
