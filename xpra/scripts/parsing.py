@@ -999,7 +999,7 @@ def parse_command_line(cmdline: list[str], defaults: XpraConfig):
         "wm-name": defaults.wm_name,
         "download-path": defaults.download_path,
         "catlink-im-preedit": defaults.catlink_im_preedit,
-        "catlink-im-passthrough-shortcut": defaults.catlink_im_passthrough_shortcut,
+        "catlink-im-enhanced-mode": defaults.catlink_im_enhanced_mode,
     }
     gettext = getattr(optparse, "gettext", lambda x: x)
     parser.add_option("-V",

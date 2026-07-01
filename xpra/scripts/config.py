@@ -617,7 +617,7 @@ OPTION_TYPES: dict[str, Any] = {
     "keyboard-variants" : list,
     "keyboard-options"  : str,
     "catlink-im-preedit": bool,
-    "catlink-im-passthrough-shortcut": bool,
+    "catlink-im-enhanced-mode": bool,
     "clipboard"         : str,
     "clipboard-direction" : str,
     "clipboard-filter-file" : str,
@@ -862,7 +862,7 @@ CLIENT_OPTIONS: list[str] = [
     "title", "username", "password", "session-name",
     "dock-icon", "tray-icon", "window-icon",
     "catlink-im-preedit",
-    "catlink-im-passthrough-shortcut",
+    "catlink-im-enhanced-mode",
     "clipboard", "clipboard-direction", "clipboard-filter-file",
     "remote-clipboard", "local-clipboard",
     "tcp-encryption", "tcp-encryption-keyfile", "encryption", "encryption-keyfile",
@@ -987,14 +987,6 @@ def get_default_key_shortcuts() -> list[str]:
         if e]
 
 
-def get_catlink_im_passthrough_shortcuts() -> list[str]:
-    return [
-        "Control+Meta+Shift+F9:toggle_catlink_im_passthrough"
-        if OSX else
-        "Control+Alt+Shift+F9:toggle_catlink_im_passthrough"
-    ]
-
-
 def get_default_systemd_run() -> str:
     if WIN32 or OSX:
         return "no"
@@ -1087,7 +1079,7 @@ def get_defaults() -> dict[str, Any]:
         "keyboard-variants" : [],
         "keyboard-options"  : "",
         "catlink-im-preedit": False,
-        "catlink-im-passthrough-shortcut": False,
+        "catlink-im-enhanced-mode": False,
         "clipboard"         : "yes",
         "clipboard-direction" : "both",
         "clipboard-filter-file" : "",
@@ -1637,22 +1629,12 @@ def fixup_options(options) -> None:
     fixup_socketdirs(options)
     fixup_clipboard(options)
     fixup_keyboard(options)
-    fixup_catlink_im_passthrough_shortcut(options)
     abs_paths(options)
     # remote-xpra is meant to be a list, but the user can specify a string using the command line,
     # in which case we replace all the default values with this single entry:
     if not isinstance(options.remote_xpra, (list, tuple)):
         options.remote_xpra = [options.remote_xpra]
 
-
-def fixup_catlink_im_passthrough_shortcut(options) -> None:
-    if not str_to_bool(options.catlink_im_passthrough_shortcut, False):
-        return
-    key_shortcut = list(options.key_shortcut or [])
-    for shortcut in get_catlink_im_passthrough_shortcuts():
-        if shortcut not in key_shortcut:
-            key_shortcut.append(shortcut)
-    options.key_shortcut = key_shortcut
 
 
 def main(argv=()):
