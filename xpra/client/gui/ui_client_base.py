@@ -107,6 +107,9 @@ class UIXpraClient(ClientBaseClass):
         self.client_lock = opts.lock is True
         self.headerbar = opts.headerbar
         self.catlink_im_preedit = str_to_bool(opts.catlink_im_preedit, False)
+        self.catlink_im_enhanced_mode = str_to_bool(opts.catlink_im_enhanced_mode, False)
+        if self.catlink_im_enhanced_mode:
+            log.warn("Catlink IM enhanced mode enabled")
 
     def client_toolkit(self) -> str:
         raise NotImplementedError()
