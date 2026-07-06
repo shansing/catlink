@@ -26,6 +26,82 @@ SHOW_ALL_VISUALS = False
 GTK_WORKAREA = envbool("XPRA_GTK_WORKAREA", True)
 
 
+def _rect_union_size(rects: list[tuple[int, int, int, int]]) -> tuple[int, int]:
+    if not rects:
+        return 0, 0
+    min_x = min(x for x, _y, _w, _h in rects)
+    min_y = min(y for _x, y, _w, _h in rects)
+    max_x = max(x + w for x, _y, w, _h in rects)
+    max_y = max(y + h for _x, y, _w, h in rects)
+    return max_x - min_x, max_y - min_y
+
+
+def _rects_overlap(rects: list[tuple[int, int, int, int]]) -> bool:
+    for i, (x1, y1, w1, h1) in enumerate(rects):
+        for x2, y2, w2, h2 in rects[i + 1:]:
+            if x1 < x2 + w2 and x2 < x1 + w1 and y1 < y2 + h2 and y2 < y1 + h1:
+                return True
+    return False
+
+
+def _match_monitor_geometries(
+        gdk_rects: list[tuple[int, int, int, int]],
+        platform_rects: tuple[tuple[int, int, int, int], ...],
+) -> tuple[tuple[int, int, int, int], ...]:
+    unmatched = list(platform_rects)
+    matched = []
+    for _x, _y, w, h in gdk_rects:
+        same_size = [r for r in unmatched if r[2:] == (w, h)]
+        if len(same_size) != 1:
+            # Duplicate monitor sizes are common. Once the platform geometry has
+            # passed the count and root-union checks, use platform order as the
+            # fallback. In this failure mode GDK position data is already broken,
+            # but GDK Quartz and NSScreen monitor ordering are expected to remain
+            # aligned.
+            screenlog("unable to match monitors uniquely by size, using platform monitor order")
+            return platform_rects
+        rect = same_size[0]
+        unmatched.remove(rect)
+        matched.append(rect)
+    return tuple(matched)
+
+
+def _get_monitor_geometry_override(display, sw: int, sh: int) -> tuple[tuple[int, int, int, int], ...]:
+    # GDK can report overlapping per-monitor rectangles after hotplug while the
+    # root screen size already reflects the full layout. When that happens, use
+    # platform-native monitor geometry, but only if it fully matches the root size.
+    n_monitors = display.get_n_monitors()
+    if n_monitors <= 1:
+        return ()
+    gdk_rects = []
+    for i in range(n_monitors):
+        geom = display.get_monitor(i).get_geometry()
+        gdk_rects.append((geom.x, geom.y, geom.width, geom.height))
+    gdk_union = _rect_union_size(gdk_rects)
+    gdk_broken = gdk_union != (sw, sh) or _rects_overlap(gdk_rects)
+    if not gdk_broken:
+        return ()
+    try:
+        from xpra.platform.gui import get_monitor_geometries
+        platform_rects = tuple(get_monitor_geometries())
+    except Exception:
+        screenlog("failed to query platform monitor geometries", exc_info=True)
+        return ()
+    if len(platform_rects) != n_monitors:
+        return ()
+    platform_union = _rect_union_size(list(platform_rects))
+    if platform_union != (sw, sh):
+        screenlog("ignoring platform monitor geometries %s: union %s does not match root %s",
+                  platform_rects, platform_union, (sw, sh))
+        return ()
+    platform_rects = _match_monitor_geometries(gdk_rects, platform_rects)
+    if platform_rects == tuple(gdk_rects):
+        return ()
+    screenlog.info("using platform monitor geometries %s instead of GDK geometries %s for root %s",
+                   platform_rects, gdk_rects, (sw, sh))
+    return platform_rects
+
+
 def get_screen_info(display, screen) -> dict[str, Any]:
     info = {}
     if not WIN32:
@@ -230,6 +306,8 @@ def get_monitors_info(xscale: float = 1.0, yscale: float = 1.0) -> dict[int, Any
     display = Gdk.Display.get_default()
     info: dict[int, Any] = {}
     n = display.get_n_monitors()
+    root_w, root_h = get_root_size()
+    geometry_override = _get_monitor_geometry_override(display, root_w, root_h)
     for i in range(n):
         minfo = info.setdefault(i, {})
         monitor = display.get_monitor(i)
@@ -242,10 +320,25 @@ def get_monitors_info(xscale: float = 1.0, yscale: float = 1.0) -> dict[int, Any
         ):
             getter = getattr(monitor, "get_%s" % attr.replace("-", "_"), None)
             if getter:
+                if attr == "workarea" and geometry_override:
+                    # GDK workarea uses the same broken monitor coordinate space
+                    # as GDK geometry in this hotplug failure mode. Do not mix it
+                    # with corrected geometry in the monitor definition.
+                    continue
                 value = getter()
                 if value is None:
                     continue
-                if isinstance(value, Gdk.Rectangle):
+                if attr == "geometry" and geometry_override:
+                    # Keep all monitor metadata from GDK, but replace the broken
+                    # per-monitor geometry used for client/server coordinate mapping.
+                    rect = geometry_override[i]
+                    value = (
+                        round(rect[0] / xscale),
+                        round(rect[1] / yscale),
+                        round(rect[2] / xscale),
+                        round(rect[3] / yscale),
+                    )
+                elif isinstance(value, Gdk.Rectangle):
                     value = (
                         round(value.x / xscale),
                         round(value.y / yscale),
@@ -344,6 +437,9 @@ def get_screen_sizes(xscale: float = 1, yscale: float = 1) -> list[tuple[int, in
     display = Gdk.Display.get_default()
     if not display:
         return []
+    screen = display.get_default_screen()
+    with IgnoreWarningsContext():
+        sw, sh = screen.get_width(), screen.get_height()
     MIN_DPI = envint("XPRA_MIN_DPI", 10)
     MAX_DPI = envint("XPRA_MIN_DPI", 500)
 
@@ -360,10 +456,17 @@ def get_screen_sizes(xscale: float = 1, yscale: float = 1) -> list[tuple[int, in
         screenlog(" workareas: %s", workareas)
         screenlog(" number of monitors does not match number of workareas!")
         workareas = []
+    geometry_override = _get_monitor_geometry_override(display, sw, sh)
     monitors = []
     for j in range(n_monitors):
         monitor = display.get_monitor(j)
         geom = monitor.get_geometry()
+        if geometry_override:
+            # The screen-size packet drives server RandR geometry; use the same
+            # corrected monitor rectangles that get_monitors_info() reports.
+            geom_x, geom_y, geom_width, geom_height = geometry_override[j]
+        else:
+            geom_x, geom_y, geom_width, geom_height = geom.x, geom.y, geom.width, geom.height
         manufacturer, model = monitor.get_manufacturer(), monitor.get_model()
         if manufacturer in ("unknown", None):
             manufacturer = ""
@@ -378,15 +481,15 @@ def get_screen_sizes(xscale: float = 1, yscale: float = 1) -> list[tuple[int, in
         else:
             plug_name = "%i" % j
         wmm, hmm = monitor.get_width_mm(), monitor.get_height_mm()
-        monitor_info = [plug_name, xs(geom.x), ys(geom.y), xs(geom.width), ys(geom.height), wmm, hmm]
+        monitor_info = [plug_name, xs(geom_x), ys(geom_y), xs(geom_width), ys(geom_height), wmm, hmm]
         screenlog(" monitor %s: %s, model=%s, manufacturer=%s",
                   j, type(monitor).__name__, monitor.get_model(), monitor.get_manufacturer())
 
         def vmwx(v) -> bool:
-            return v < geom.x or v > geom.x + geom.width
+            return v < geom_x or v > geom_x + geom_width
 
         def vmwy(v) -> bool:
-            return v < geom.y or v > geom.y + geom.height
+            return v < geom_y or v > geom_y + geom_height
 
         def valid_workarea(work_x, work_y, work_width, work_height) -> list[int]:
             if vmwx(work_x) or vmwx(work_x + work_width) or vmwy(work_y) or vmwy(work_y + work_height):
@@ -394,15 +497,16 @@ def get_screen_sizes(xscale: float = 1, yscale: float = 1) -> list[tuple[int, in
                 return []
             return list(swork(work_x, work_y, work_width, work_height))
 
-        if GTK_WORKAREA and hasattr(monitor, "get_workarea"):
+        if geometry_override:
+            # GDK workarea can be in the same broken coordinate space as GDK
+            # geometry. Do not attach per-monitor workarea to corrected geometry.
+            pass
+        elif GTK_WORKAREA and hasattr(monitor, "get_workarea"):
             rect = monitor.get_workarea()
             monitor_info += valid_workarea(rect.x, rect.y, rect.width, rect.height)
         elif workareas:
             monitor_info += valid_workarea(*workareas[j])
         monitors.append(tuple(monitor_info))
-    screen = display.get_default_screen()
-    with IgnoreWarningsContext():
-        sw, sh = screen.get_width(), screen.get_height()
     work_x, work_y, work_width, work_height = swork(0, 0, sw, sh)
     workarea = get_workarea()  # pylint: disable=assignment-from-none
     screenlog(" workarea=%s", workarea)

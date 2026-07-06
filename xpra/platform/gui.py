@@ -198,6 +198,12 @@ def get_workareas() -> Sequence[tuple[int, int, int, int]]:
     return ()
 
 
+# per monitor geometries using the platform native coordinate system,
+# normalized to the toolkit's top-left origin.
+def get_monitor_geometries() -> Sequence[tuple[int, int, int, int]]:
+    return ()
+
+
 def get_number_of_desktops() -> int:
     return 1
 
@@ -373,7 +379,7 @@ platform_import(globals(), "gui", False,
                 "pointer_grab", "pointer_ungrab",
                 "take_screenshot",
                 "get_session_type",
-                "get_vrefresh", "get_workarea", "get_workareas",
+                "get_vrefresh", "get_workarea", "get_workareas", "get_monitor_geometries",
                 "get_number_of_desktops", "get_desktop_names",
                 "get_antialias_info", "get_icc_info", "get_display_icc_info", "get_xdpi", "get_ydpi",
                 "get_monitors_info",
