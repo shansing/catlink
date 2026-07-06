@@ -342,6 +342,7 @@ class GTKClientWindowBase(ClientWindowBase, Gtk.Window):
         if hasattr(self, '_requested_position') and self._requested_position:
             def _move():
                 x, y = self.sp(*self.adjusted_position(*self._requested_position))
+                x, y = self.clamp_initial_position_to_visible_area(x, y, *self._size)
                 self.move(x, y)
 
             if self.get_realized():
