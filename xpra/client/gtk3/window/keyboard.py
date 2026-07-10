@@ -20,6 +20,7 @@ log = Logger("window", "keyboard")
 UNICODE_KEYNAMES = envbool("XPRA_UNICODE_KEYNAMES", False)
 
 CATLINK_IM_HANDLED_STOP_KEYS = {
+    "BackSpace",
     "Return",
     "KP_Enter",
     "ISO_Enter",
