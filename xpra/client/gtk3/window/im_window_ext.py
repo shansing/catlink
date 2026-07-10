@@ -54,13 +54,16 @@ class IMEnhancedWindow(GtkStubWindow):
         self.im_context = Gtk.IMMulticontext()
         # 3. 绑定输入法完整信号集（本地程序默认绑定，缺一不可）
         self.im_context.connect("commit", self._on_im_commit)
-        self.im_context.connect("preedit-start", self._on_im_preedit_start)
-        self.im_context.connect("preedit-end", self._on_im_preedit_end)
-        self.im_context.connect("preedit-changed", self._on_im_preedit_changed)
+        if self._catlink_im_preedit:
+            self.im_context.connect("preedit-start", self._on_im_preedit_start)
+            self.im_context.connect("preedit-end", self._on_im_preedit_end)
+            self.im_context.connect("preedit-changed", self._on_im_preedit_changed)
         self.im_context.connect("retrieve-surrounding", self._on_im_retrieve_surrounding)
         self.im_context.connect("delete-surrounding", self._on_im_delete_surrounding)
-        if WIN32:
+        if not self._catlink_im_preedit:
             self.im_context.set_use_preedit(False)
+        else:
+            self.im_context.set_use_preedit(True)
         self.im_setup = False
         self._im_is_transient_utility_window = False
         self._im_transient_window = None
@@ -263,6 +266,12 @@ class IMEnhancedWindow(GtkStubWindow):
             self.im_setup = True
             self._cache_transient_for_window()
             im_windows.add(self)
+            # workaround: Windows need this set_use_preedit(False),
+            #   otherwise may not work sometimes with pop-up windows
+            if not self._catlink_im_preedit:
+                self.im_context.set_use_preedit(False)
+            else:
+                self.im_context.set_use_preedit(True)
             self.connect("focus-in-event", self._on_im_focus_in)
             self.connect("focus-out-event", self._on_im_focus_out)
             xid = self._metadata.get("xid")
@@ -318,13 +327,9 @@ class IMEnhancedWindow(GtkStubWindow):
         pass
 
     def _on_im_preedit_end(self, im_context):
-        if not self._catlink_im_preedit:
-            return
         self._send_im_preedit("", 0, False)
 
     def _on_im_preedit_changed(self, im_context):
-        if not self._catlink_im_preedit:
-            return
         text, _attrs, cursor_pos = im_context.get_preedit_string()
         text = text or ""
         if text and not cursor_pos:
