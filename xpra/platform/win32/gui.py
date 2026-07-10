@@ -34,6 +34,8 @@ from xpra.platform.win32.common import (
     GetIntSystemParametersInfo,
     GetUserObjectInformationA, OpenInputDesktop, CloseDesktop,
     GetMonitorInfo,
+    LoadImageW,
+    UINT, WPARAM, LPARAM, LRESULT,
 )
 from xpra.os_util import gi_import
 from xpra.util.objects import typedict
@@ -52,6 +54,7 @@ GLib = gi_import("GLib")
 
 REINIT_VISIBLE_WINDOWS = envbool("XPRA_WIN32_REINIT_VISIBLE_WINDOWS", True)
 APP_ID = os.environ.get("XPRA_WIN32_APP_ID", "Xpra")
+CATLINK_APP_ICON_ICO = os.environ.get("CATLINK_APP_ICON_ICO", "")
 MONITOR_DPI = envbool("XPRA_WIN32_MONITOR_DPI", True)
 
 PyCapsule_GetPointer = pythonapi.PyCapsule_GetPointer
@@ -86,6 +89,12 @@ SetForegroundWindow.restype = c_bool
 SetWindowPos = user32.SetWindowPos
 SetWindowPos.argtypes = [HWND, HWND, c_int, c_int, c_int, c_int, c_uint]
 SetWindowPos.restype = c_bool
+SendMessageW = user32.SendMessageW
+SendMessageW.argtypes = [HWND, UINT, WPARAM, LPARAM]
+SendMessageW.restype = LRESULT
+
+_CATLINK_ICON_HANDLES = {}
+_CATLINK_ICON_WARNED = set()
 
 
 def get_swg() -> Callable:
@@ -142,6 +151,42 @@ def init_appid() -> None:
     SetCurrentProcessExplicitAppUserModelID.argtypes = [LPCWSTR]
     if shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID):
         log.warn("Warning: failed to set process app ID")
+
+
+def load_catlink_window_icon(icon_path: str, width: int, height: int):
+    key = icon_path, width, height
+    hicon = _CATLINK_ICON_HANDLES.get(key)
+    if hicon:
+        return hicon
+    hicon = LoadImageW(None, icon_path, win32con.IMAGE_ICON, width, height, win32con.LR_LOADFROMFILE)
+    if hicon:
+        _CATLINK_ICON_HANDLES[key] = hicon
+    return hicon
+
+
+def apply_catlink_window_icon(hwnd: int) -> None:
+    icon_path = CATLINK_APP_ICON_ICO
+    if not icon_path:
+        return
+    if not os.path.exists(icon_path):
+        if icon_path not in _CATLINK_ICON_WARNED:
+            _CATLINK_ICON_WARNED.add(icon_path)
+            log.warn("Warning: catlink window icon not found: %s", icon_path)
+        return
+    small_icon = load_catlink_window_icon(
+        icon_path,
+        GetSystemMetrics(win32con.SM_CXSMICON),
+        GetSystemMetrics(win32con.SM_CYSMICON),
+    )
+    big_icon = load_catlink_window_icon(
+        icon_path,
+        GetSystemMetrics(win32con.SM_CXICON),
+        GetSystemMetrics(win32con.SM_CYICON),
+    )
+    if small_icon:
+        SendMessageW(hwnd, win32con.WM_SETICON, win32con.ICON_SMALL, small_icon)
+    if big_icon:
+        SendMessageW(hwnd, win32con.WM_SETICON, win32con.ICON_BIG, big_icon)
 
 
 def use_stdin() -> bool:
@@ -555,6 +600,7 @@ def add_window_hooks(window) -> None:
         log.warn("Warning: cannot add window hooks without a window handle!")
         return
     log("add_window_hooks(%s) gdk window=%s, hwnd=%#x", window, gdk_window, handle)
+    apply_catlink_window_icon(handle)
 
     if GROUP_LEADER:
         # MSWindows 7 onwards can use AppUserModel to emulate the group leader stuff:
