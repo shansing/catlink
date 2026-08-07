@@ -84,7 +84,7 @@ class IMEnhancedWindow(GtkStubWindow):
         # TODO: set surronding
         pass
     def _on_im_delete_surrounding(self, im_context, offset, n_chars):
-        log.info(f"on im delete surrounding OFFSET:{offset} N_CHARS:{n_chars}")
+        log.info("on im delete surrounding OFFSET:%s N_CHARS:%s", offset, n_chars)
         # TODO: set surronding
         pass
 

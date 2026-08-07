@@ -230,7 +230,7 @@ class RFBClientProtocol(RFBProtocol):
             session_name = sn.decode("utf8")
         except UnicodeDecodeError:
             session_name = sn.decode("latin1")
-        log.info(f"RFB server session {session_name!r}: {w}x{h} {depth} bits")
+        log.info("RFB server session %r: %sx%s %s bits", session_name, w, h, depth)
         log(f"bpp={bpp}, bigendian={bool(bigendian)}")
         if not truecolor:
             self.invalid("server is not true color", packet)

@@ -138,7 +138,7 @@ class ChallengeClient(StubClientMixin):
         except Exception as e:
             log("get_challenge_handler(%s)", auth, exc_info=True)
             log.error("Error: cannot instantiate authentication handler")
-            log.error(f" {mod_name!r}: {e}")
+            log.error(" %r: %s", mod_name, e)
         return None
 
     def _process_challenge(self, packet: Packet) -> None:
@@ -171,12 +171,12 @@ class ChallengeClient(StubClientMixin):
                 # the handler is telling us to give up
                 # (ie: pinentry was cancelled by the user)
                 log(f"{handler.handle}({packet}) raised {e!r}")
-                log.info(f"exiting: {e}")
+                log.info("exiting: %s", e)
                 GLib.idle_add(self.disconnect_and_quit, e.status, str(e))
                 return
             except Exception as e:
                 log(f"{handler.handle}({packet})", exc_info=True)
-                log.error(f"Error in {handler} challenge handler:")
+                log.error("Error in %s challenge handler:", handler)
                 log.estr(e)
                 continue
         log.warn("Warning: failed to connect, authentication required")
@@ -226,7 +226,7 @@ class ChallengeClient(StubClientMixin):
                    message: str,
                    server_message: str | ConnectionMessage = ConnectionMessage.AUTHENTICATION_FAILED) -> None:
         log.error("Error: authentication failed:")
-        log.error(f" {message}")
+        log.error(" %s", message)
         self.disconnect_and_quit(code, server_message)
 
     def validate_challenge_packet(self, packet) -> bool:

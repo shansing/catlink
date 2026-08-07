@@ -91,7 +91,7 @@ if use_x11_bindings():
         log(" %s", x11e)
     except RuntimeError as e:
         log("x11", exc_info=True)
-        log.error(f"Error loading X11 bindings: {e}")
+        log.error("Error loading X11 bindings: %s", e)
     else:
         set_context_check(verify_sync)
         HAS_X11_BINDINGS = True
@@ -719,7 +719,7 @@ class GTKClientWindowBase(ClientWindowBase, Gtk.Window):
                 function()
             except Exception as e:
                 log("deiconify()", exc_info=True)
-                log.error(f"Error calling {function} on {self} during deiconification:")
+                log.error("Error calling %s on %s during deiconification:", function, self)
                 log.estr(e)
         Gtk.Window.deiconify(self)
 

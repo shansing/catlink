@@ -68,7 +68,7 @@ class ClientWindow(Window):
     def on_key_event(self, pressed: bool, keysym: int, modifiers: int) -> None:
         keyname = keynames.get(keysym)
         if not keyname:
-            log.info(f"unknown key {keysym}")
+            log.info("unknown key %s", keysym)
             return
         mods = get_modifiers(modifiers)
         keyval = 0

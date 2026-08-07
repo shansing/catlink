@@ -38,7 +38,7 @@ class ServerInfoClient(StubClientMixin):
         if LOG_INFO_RESPONSE:
             items = LOG_INFO_RESPONSE.split(",")
             logres = [re.compile(v) for v in items]
-            log.info("info-response debug for %s:", csv("'%s'" % x for x in items))
+            log.info("info-response debug for %s:", items)
             for k in sorted(self.server_last_info.keys()):
                 if LOG_INFO_RESPONSE == "all" or any(lr.match(k) for lr in logres):
                     log.info(" %s=%s", k, self.server_last_info[k])

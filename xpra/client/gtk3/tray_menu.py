@@ -1261,7 +1261,7 @@ class GTKTrayMenu(MenuHelper):
                     })
             kh.update()
             kh.send_layout()
-            log.info(f"{msg}: {descr!r}")
+            log.info("%s: %r", msg, descr)
             if not backend:
                 kh.send_keymap()
 

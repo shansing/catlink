@@ -683,13 +683,13 @@ class WindowBackingBase:
 
         def nomatch() -> None:
             videolog.error("Error: no matching csc options")
-            videolog.error(f" for {src_format!r} {src_width}x{src_height} input")
-            videolog.error(f" to {csv(dst_format_options)} {dst_width}x{dst_height} output")
-            videolog.error(f" speed={speed}")
+            videolog.error(" for %r %sx%s input", src_format, src_width, src_height)
+            videolog.error(" to %s %sx%s output", csv(dst_format_options), dst_width, dst_height)
+            videolog.error(" speed=%s", speed)
             videolog.error(" all csc options:")
             for k, vdict in CSC_OPTIONS.items():
                 videolog.error(" * %-10s : %s", k, csv(vdict))
-            videolog.error(f" tested {src_format!r} to:")
+            videolog.error(" tested %r to:", src_format)
             for dst_format in dst_format_options:
                 specs = in_options.get(dst_format)
                 if not specs:
@@ -703,7 +703,7 @@ class WindowBackingBase:
                         errs.append(size_error)
                     if not spec.can_scale and (src_width != dst_width or src_height != dst_height):
                         errs.append("scaling not supported")
-                    videolog.error(f"              - {spec}{csv(errs)}")
+                    videolog.error("              - %s%s", spec, csv(errs))
 
         videolog(f"csc scores: {csc_scores}")
         if not csc_scores:
@@ -847,7 +847,7 @@ class WindowBackingBase:
                     videolog.error(" %sx%s pixels using %s", width, height, vd.get_type())
                     videolog.error(" frame options:")
                     for k, v in options.items():
-                        videolog.error(f"    {k:10}={v}")
+                        videolog.error("    %-10s=%s", k, v)
                 return
 
             x, y = self.gravity_adjust(x, y, options)

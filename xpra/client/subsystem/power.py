@@ -66,7 +66,7 @@ class PowerEventClient(StubClientMixin):
         log(f"{self} unpause")
 
     def suspend(self) -> None:
-        log.info(f"{self} suspending")
+        log.info("%s suspending", self)
 
     def resume(self) -> None:
-        log.info(f"{self} resuming")
+        log.info("%s resuming", self)

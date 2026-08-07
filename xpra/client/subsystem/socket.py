@@ -172,7 +172,7 @@ class NetworkListener(StubClientMixin):
             request = caps.strget("request")
             if request:
                 if not self.handle_hello_request(proto, request, caps):
-                    log.info(f"{request!r} requests are not handled by this client")
+                    log.info("%r requests are not handled by this client", request)
                     proto.send_disconnect([ConnectionMessage.PROTOCOL_ERROR])
                 return
         elif packet_type in (CONNECTION_LOST, GIBBERISH):
@@ -227,7 +227,7 @@ class NetworkListener(StubClientMixin):
             if not fn:
                 hello_reply({"error": "%s not found" % request})
             else:
-                log.info(f"calling {fn}")
+                log.info("calling %s", fn)
                 GLib.idle_add(fn)
                 hello_reply({})
             return True

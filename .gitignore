@@ -50,6 +50,7 @@ packaging/MacOS/xpra-html5
 /dist
 /xpra.iss
 *.dll
+*.so
 *.orig
 *.bak
 *.log
