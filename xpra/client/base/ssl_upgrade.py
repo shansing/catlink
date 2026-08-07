@@ -32,7 +32,7 @@ class SSLUpgradeClient(StubClientMixin):
         new_socktype = {"tcp": "ssl", "ws": "wss"}.get(socktype)
         if not new_socktype:
             raise ValueError(f"cannot upgrade {socktype} to ssl")
-        log.info(f"upgrading {conn} to {new_socktype}")
+        log.info("upgrading %s to %s", conn, new_socktype)
         self.send("ssl-upgrade", {})
         from xpra.net.ssl.socket import ssl_handshake, ssl_wrap_socket
         from xpra.net.ssl.file import get_ssl_attributes

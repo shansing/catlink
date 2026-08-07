@@ -111,7 +111,7 @@ def get_appimage(app_name: str, icondata=b"", menu_icon_size=24) -> Gtk.Image | 
 
     def err(e) -> None:
         log("failed to load icon", exc_info=True)
-        log.error(f"Error: failed to load icon data for {app_name!r}:")
+        log.error("Error: failed to load icon data for %r:", app_name)
         log.estr(e)
         log.error(" data=%s", repr_ellipsized(icondata))
 

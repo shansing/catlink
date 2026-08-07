@@ -142,11 +142,11 @@ class XpraPygletClient:
 
     def _process_hello(self, packet: Packet) -> None:
         self.hello = packet.get_dict(1)
-        netlog.info("got hello from %s server" % self.hello.get("version", ""))
+        netlog.info("got hello from %s server", self.hello.get("version", ""))
 
     def _process_setting_change(self, packet: Packet) -> None:
         setting = packet.get_str(1)
-        netlog.info(f"ignoring setting-change for {setting!r}")
+        netlog.info("ignoring setting-change for %r", setting)
 
     def _process_startup_complete(self, _packet: Packet) -> None:
         netlog.info("client is connected")
@@ -212,7 +212,7 @@ class XpraPygletClient:
     def _process_window_metadata(self, packet: Packet) -> None:
         wid = packet.get_wid()
         metadata = packet.get_dict(2)
-        log.info(f"window {wid:#x}: {metadata}")
+        log.info("window %#x: %s", wid, metadata)
 
     def update_focus(self, wid=0) -> None:
         if self.focused == wid:

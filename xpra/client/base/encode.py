@@ -113,7 +113,7 @@ class EncodeClient(ClientBaseClass):
         save_as = os.path.splitext(os.path.basename(filename))[0] + f".{encoding}"
         with open(save_as, "wb") as f:
             f.write(data)
-        log.info(f"saved %i bytes to {save_as!r}", len(data))
+        log.info("saved %i bytes to %r", len(data), save_as)
         if not self.filenames:
             self.quit(ExitCode.OK)
             return

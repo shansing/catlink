@@ -670,7 +670,7 @@ class XpraClientBase(ClientBaseClass):
         netlog("parse_server_capabilities(..)")
         for bc in CLIENT_BASES:
             if not bc.parse_server_capabilities(self, c):
-                log.info(f"server capabilities rejected by {bc}")
+                log.info("server capabilities rejected by %s", bc)
                 return False
         self.server_client_shutdown = c.boolget("client-shutdown", True)
         self.server_compressors = c.strtupleget("compressors", )
@@ -723,13 +723,13 @@ class XpraClientBase(ClientBaseClass):
             netlog.error(" %s", bytestostr(data).split(": ", 1)[1])
             data = ""
         elif packet_type and packet_type != "xpra":
-            netlog.error(f" this is a {packet_type!r} packet,")
+            netlog.error(" this is a %r packet,", packet_type)
             netlog.error(" not from an xpra server?")
         else:
             parts = message.split(" read buffer=", 1)
             netlog.error(" received uninterpretable nonsense:")
             if not show_as_text:
-                netlog.error(f" {parts[0]}")
+                netlog.error(" %s", parts[0])
                 if len(parts) == 2:
                     text = bytestostr(parts[1])
                     netlog.error(" %s", text)
@@ -741,15 +741,15 @@ class XpraClientBase(ClientBaseClass):
                     for x in data.split("\n"):
                         netlog.error("  %r", x.split("\0")[0])
                 else:
-                    netlog.error(f" {data!r}")
+                    netlog.error(" %r", data)
             else:
-                netlog.error(f" packet no {pcount} data: {repr_ellipsized(data)}")
+                netlog.error(" packet no %s data: %s", pcount, repr_ellipsized(data))
         self.quit(exit_code)
 
     def _process_invalid(self, packet: Packet) -> None:
         message = packet.get_str(1)
         data = packet.get_bytes(2)
-        netlog.info(f"Received invalid packet: {message}")
+        netlog.info("Received invalid packet: %s", message)
         netlog(" data: %s", Ellipsizer(data))
         p = self._protocol
         exit_code = ExitCode.PACKET_FAILURE

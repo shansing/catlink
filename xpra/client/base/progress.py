@@ -25,7 +25,7 @@ class ProgressClient(StubClientMixin):
         pp = self.progress_process
         log(f"progress({pct}, {text!r}) progress process={pp}")
         if SPLASH_LOG:
-            log.info(f"{pct:3} {text}")
+            log.info("%3s %s", pct, text)
         if pp:
             pp.progress(pct, text)
 

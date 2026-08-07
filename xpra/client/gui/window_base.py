@@ -677,7 +677,7 @@ class ClientWindowBase(ClientWidgetBase):
             geomlog.error("Error setting window hints:")
             geomlog.estr(e)
             for k, v in hints.items():
-                geomlog.error(f"  {k}={v}")
+                geomlog.error("  %s=%s", k, v)
             geomlog.error(" from size constraints:")
             for k, v in size_constraints.items():
                 geomlog.error("  %s=%s", k, v)
@@ -837,7 +837,12 @@ class ClientWindowBase(ClientWidgetBase):
 
     def after_draw_refresh(self, success, message="") -> None:
         backing = self._backing
-        paintlog(f"after_draw_refresh({success}, {message!r}) pending_refresh={self.pending_refresh}, {backing=}")
+        paintlog(
+            "after_draw_refresh(%s, %r) pending_refresh=%s, backing=%s",
+            success, message, self.pending_refresh, backing,
+        )
+        pr = self.pending_refresh
+        self.pending_refresh = []
         if not backing:
             return
         if backing.repaint_all or self._xscale != 1 or self._yscale != 1 or is_Wayland():
@@ -845,8 +850,6 @@ class ClientWindowBase(ClientWidgetBase):
             rw, rh = self.get_size()
             GLib.idle_add(self.repaint, 0, 0, rw, rh)
             return
-        pr = self.pending_refresh
-        self.pending_refresh = []
         for x, y, w, h in pr:
             rx, ry, rw, rh = self._client.srect(x, y, w, h)
             if self.window_offset:

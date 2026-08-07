@@ -315,7 +315,7 @@ class Encodings(StubClientMixin):
             if encoding not in encodings:
                 raise ValueError(f"encoding {encoding} is not supported - only {csv(encodings)!r}")
             if encoding not in self.server_encodings:
-                log.error(f"Error: encoding {encoding} is not supported by the server")
+                log.error("Error: encoding %s is not supported by the server", encoding)
                 log.error(" the only encodings allowed are:")
                 log.error(" " + csv(self.server_encodings))
                 return

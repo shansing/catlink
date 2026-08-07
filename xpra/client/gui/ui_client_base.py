@@ -270,7 +270,7 @@ class UIXpraClient(ClientBaseClass):
             log("%s.parse_server_capabilities(..)", cb)
             try:
                 if not cb.parse_server_capabilities(self, c):
-                    log.info(f"failed to parse server capabilities in {cb}")
+                    log.info("failed to parse server capabilities in %s", cb)
                     return False
             except Exception:
                 log("%s.parse_server_capabilities(%s)", cb, Ellipsizer(c))

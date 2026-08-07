@@ -167,7 +167,7 @@ class DragNDropWindow(GtkStubWindow):
                     })
                 success = resp.ok
                 if success:
-                    log.info(f"DND DROP RESULT {resp} win:{target_xid}")
+                    log.info("DND DROP RESULT %s win:%s", resp, target_xid)
                 else:
                     log.warn(f"Warning: DND DROP failed {resp} win:{target_xid}")
             except Exception as e:

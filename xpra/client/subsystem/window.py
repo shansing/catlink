@@ -1802,7 +1802,7 @@ class WindowClient(StubClientMixin):
             window.draw_region(x, y, width, height, coding, data, rowstride, options, [record_decode_time])
         except Exception as e:
             drawlog.error("Error drawing on window %#x", wid)
-            drawlog.error(f" using encoding {coding} with {options=}", exc_info=True)
+            drawlog.error(" using encoding %s with options=%s", coding, options, exc_info=True)
             GLib.idle_add(record_decode_time, False, str(e))
             raise
 

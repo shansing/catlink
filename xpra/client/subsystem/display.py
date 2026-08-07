@@ -259,7 +259,7 @@ class DisplayClient(StubClientMixin):
             if v:
                 w, h = v
                 ss = c.tupleget("screen_sizes")
-                log.info(f" remote desktop size is {w}x{h}")
+                log.info(" remote desktop size is %sx%s", w, h)
                 if ss:
                     log_screen_sizes(w, h, ss)
 

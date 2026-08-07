@@ -61,7 +61,7 @@ if use_x11_bindings():
         log(" %s", x11e)
     except RuntimeError as e:
         log("x11", exc_info=True)
-        log.error(f"Error loading X11 bindings: {e}")
+        log.error("Error loading X11 bindings: %s", e)
     else:
         HAS_X11_BINDINGS = True
         root_xid = get_root_xid()

@@ -149,6 +149,6 @@ class ServerInfoMixin(StubClientMixin):
         mode = c.strget("server.mode", "server")
         bits = c.intget("python.bits", 0)
         bitsstr = "" if bits == 0 else f" {bits}-bit"
-        log.info(f"Xpra {mode} server version {std(r)}{bitsstr}")
+        log.info("Xpra %s server version %s%s", mode, std(r), bitsstr)
         if i and i != "unknown":
-            log.info(f" running on {std(i)}")
+            log.info(" running on %s", std(i))
