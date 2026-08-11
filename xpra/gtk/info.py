@@ -47,11 +47,12 @@ def _rects_overlap(rects: list[tuple[int, int, int, int]]) -> bool:
 def _match_monitor_geometries(
         gdk_rects: list[tuple[int, int, int, int]],
         platform_rects: tuple[tuple[int, int, int, int], ...],
-) -> tuple[tuple[int, int, int, int], ...]:
-    unmatched = list(platform_rects)
+) -> tuple[tuple[tuple[int, int, int, int], ...], tuple[int, ...]]:
+    unmatched = list(enumerate(platform_rects))
     matched = []
+    platform_order = []
     for _x, _y, w, h in gdk_rects:
-        same_size = [r for r in unmatched if r[2:] == (w, h)]
+        same_size = [(i, r) for i, r in unmatched if r[2:] == (w, h)]
         if len(same_size) != 1:
             # Duplicate monitor sizes are common. Once the platform geometry has
             # passed the count and root-union checks, use platform order as the
@@ -59,20 +60,23 @@ def _match_monitor_geometries(
             # but GDK Quartz and NSScreen monitor ordering are expected to remain
             # aligned.
             screenlog("unable to match monitors uniquely by size, using platform monitor order")
-            return platform_rects
-        rect = same_size[0]
-        unmatched.remove(rect)
+            return platform_rects, tuple(range(len(platform_rects)))
+        platform_index, rect = same_size[0]
+        unmatched.remove((platform_index, rect))
         matched.append(rect)
-    return tuple(matched)
+        platform_order.append(platform_index)
+    return tuple(matched), tuple(platform_order)
 
 
-def _get_monitor_geometry_override(display, sw: int, sh: int) -> tuple[tuple[int, int, int, int], ...]:
+def _get_monitor_geometry_override(
+        display, sw: int, sh: int,
+) -> tuple[tuple[tuple[int, int, int, int], ...], tuple[int, ...], tuple[int, ...]]:
     # GDK can report overlapping per-monitor rectangles after hotplug while the
     # root screen size already reflects the full layout. When that happens, use
     # platform-native monitor geometry, but only if it fully matches the root size.
     n_monitors = display.get_n_monitors()
-    if n_monitors <= 1:
-        return ()
+    if n_monitors <= 0:
+        return (), (), ()
     gdk_rects = []
     for i in range(n_monitors):
         geom = display.get_monitor(i).get_geometry()
@@ -80,26 +84,38 @@ def _get_monitor_geometry_override(display, sw: int, sh: int) -> tuple[tuple[int
     gdk_union = _rect_union_size(gdk_rects)
     gdk_broken = gdk_union != (sw, sh) or _rects_overlap(gdk_rects)
     if not gdk_broken:
-        return ()
+        return (), (), ()
     try:
         from xpra.platform.gui import get_monitor_geometries
         platform_rects = tuple(get_monitor_geometries())
     except Exception:
         screenlog("failed to query platform monitor geometries", exc_info=True)
-        return ()
-    if len(platform_rects) != n_monitors:
-        return ()
+        return (), (), ()
     platform_union = _rect_union_size(list(platform_rects))
     if platform_union != (sw, sh):
         screenlog("ignoring platform monitor geometries %s: union %s does not match root %s",
                   platform_rects, platform_union, (sw, sh))
-        return ()
-    platform_rects = _match_monitor_geometries(gdk_rects, platform_rects)
-    if platform_rects == tuple(gdk_rects):
-        return ()
+        return (), (), ()
+    if len(platform_rects) == n_monitors:
+        platform_rects, platform_order = _match_monitor_geometries(gdk_rects, platform_rects)
+        gdk_order = tuple(range(n_monitors))
+        if platform_rects == tuple(gdk_rects):
+            return (), (), ()
+    else:
+        # During hotplug GDK can lag behind NSScreen. Keep native geometry and
+        # map each native monitor to the closest available GDK monitor metadata.
+        unused = set(range(n_monitors))
+        gdk_order = []
+        for native in platform_rects:
+            same_size = [i for i in unused if gdk_rects[i][2:] == native[2:]]
+            index = same_size[0] if same_size else min(unused, default=0)
+            gdk_order.append(index)
+            unused.discard(index)
+        platform_order = tuple(range(len(platform_rects)))
+        gdk_order = tuple(gdk_order)
     screenlog.info("using platform monitor geometries %s instead of GDK geometries %s for root %s",
                    platform_rects, gdk_rects, (sw, sh))
-    return platform_rects
+    return platform_rects, platform_order, gdk_order
 
 
 def get_screen_info(display, screen) -> dict[str, Any]:
@@ -303,14 +319,17 @@ def get_monitor_info(monitor: Gdk.Monitor) -> dict[str, Any]:
 
 
 def get_monitors_info(xscale: float = 1.0, yscale: float = 1.0) -> dict[int, Any]:
+    from xpra.platform.gui import get_workareas
     display = Gdk.Display.get_default()
     info: dict[int, Any] = {}
     n = display.get_n_monitors()
     root_w, root_h = get_root_size()
-    geometry_override = _get_monitor_geometry_override(display, root_w, root_h)
-    for i in range(n):
+    geometry_override, platform_order, gdk_order = _get_monitor_geometry_override(display, root_w, root_h)
+    workareas = get_workareas() if geometry_override else ()
+    monitor_count = len(geometry_override) if geometry_override else n
+    for i in range(monitor_count):
         minfo = info.setdefault(i, {})
-        monitor = display.get_monitor(i)
+        monitor = display.get_monitor(gdk_order[i] if geometry_override else i)
         minfo["primary"] = monitor.is_primary()
         for attr in (
                 "geometry", "refresh-rate", "scale-factor",
@@ -321,14 +340,20 @@ def get_monitors_info(xscale: float = 1.0, yscale: float = 1.0) -> dict[int, Any
             getter = getattr(monitor, "get_%s" % attr.replace("-", "_"), None)
             if getter:
                 if attr == "workarea" and geometry_override:
-                    # GDK workarea uses the same broken monitor coordinate space
-                    # as GDK geometry in this hotplug failure mode. Do not mix it
-                    # with corrected geometry in the monitor definition.
-                    continue
-                value = getter()
-                if value is None:
-                    continue
-                if attr == "geometry" and geometry_override:
+                    # NSScreen workareas are local to each display. Rebase them
+                    # onto the corrected native monitor geometry.
+                    platform_index = platform_order[i]
+                    if platform_index >= len(workareas):
+                        continue
+                    rect = geometry_override[i]
+                    local = workareas[platform_index]
+                    value = (
+                        round((rect[0] + local[0]) / xscale),
+                        round((rect[1] + local[1]) / yscale),
+                        round(local[2] / xscale),
+                        round(local[3] / yscale),
+                    )
+                elif attr == "geometry" and geometry_override:
                     # Keep all monitor metadata from GDK, but replace the broken
                     # per-monitor geometry used for client/server coordinate mapping.
                     rect = geometry_override[i]
@@ -338,7 +363,11 @@ def get_monitors_info(xscale: float = 1.0, yscale: float = 1.0) -> dict[int, Any
                         round(rect[2] / xscale),
                         round(rect[3] / yscale),
                     )
-                elif isinstance(value, Gdk.Rectangle):
+                else:
+                    value = getter()
+                    if value is None:
+                        continue
+                if isinstance(value, Gdk.Rectangle):
                     value = (
                         round(value.x / xscale),
                         round(value.y / yscale),
@@ -451,15 +480,16 @@ def get_screen_sizes(xscale: float = 1, yscale: float = 1) -> list[tuple[int, in
     # GTK 3.22 onwards always returns just a single screen,
     # potentially with multiple monitors
     n_monitors = display.get_n_monitors()
+    geometry_override, platform_order, gdk_order = _get_monitor_geometry_override(display, sw, sh)
+    monitor_count = len(geometry_override) if geometry_override else n_monitors
     workareas = get_workareas()
-    if workareas and len(workareas) != n_monitors:
+    if workareas and len(workareas) != monitor_count:
         screenlog(" workareas: %s", workareas)
-        screenlog(" number of monitors does not match number of workareas!")
+        screenlog(" number of workareas does not match monitor count %s", monitor_count)
         workareas = []
-    geometry_override = _get_monitor_geometry_override(display, sw, sh)
     monitors = []
-    for j in range(n_monitors):
-        monitor = display.get_monitor(j)
+    for j in range(monitor_count):
+        monitor = display.get_monitor(gdk_order[j] if geometry_override else j)
         geom = monitor.get_geometry()
         if geometry_override:
             # The screen-size packet drives server RandR geometry; use the same
@@ -497,10 +527,14 @@ def get_screen_sizes(xscale: float = 1, yscale: float = 1) -> list[tuple[int, in
                 return []
             return list(swork(work_x, work_y, work_width, work_height))
 
-        if geometry_override:
-            # GDK workarea can be in the same broken coordinate space as GDK
-            # geometry. Do not attach per-monitor workarea to corrected geometry.
-            pass
+        if geometry_override and workareas:
+            # Native workareas are local to each screen; rebase them to the
+            # corrected global monitor geometry before scaling.
+            platform_index = platform_order[j]
+            if platform_index < len(workareas):
+                work_x, work_y, work_width, work_height = workareas[platform_index]
+                workarea_rect = (geom_x + work_x, geom_y + work_y, work_width, work_height)
+                monitor_info += valid_workarea(*workarea_rect)
         elif GTK_WORKAREA and hasattr(monitor, "get_workarea"):
             rect = monitor.get_workarea()
             monitor_info += valid_workarea(rect.x, rect.y, rect.width, rect.height)

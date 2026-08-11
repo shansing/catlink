@@ -164,7 +164,8 @@ class GTKClientWindowBase(ClientWindowBase, Gtk.Window):
 
     def init_window(self, client, metadata: typedict, client_props: typedict) -> None:
         self.init_max_window_size()
-        if self._override_redirect or is_popup(metadata):
+        popup = is_popup(metadata)
+        if self._override_redirect or popup:
             window_type = Gtk.WindowType.POPUP
         else:
             window_type = Gtk.WindowType.TOPLEVEL
@@ -341,8 +342,9 @@ class GTKClientWindowBase(ClientWindowBase, Gtk.Window):
 
         if hasattr(self, '_requested_position') and self._requested_position:
             def _move():
-                x, y = self.sp(*self.adjusted_position(*self._requested_position))
-                x, y = self.clamp_initial_position_to_visible_area(x, y, *self._size)
+                adjusted = self.adjusted_position(*self._requested_position)
+                scaled = self.sp(*adjusted)
+                x, y = self.clamp_initial_position_to_visible_area(*scaled, *self._size)
                 self.move(x, y)
 
             if self.get_realized():
