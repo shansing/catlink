@@ -24,6 +24,15 @@ def get_default_root_window() -> Gdk.Window | None:
 def get_root_size(default: None | tuple[int, int] = (1920, 1024)) -> tuple[int, int] | None:
     w = h = 0
     if OSX:
+        try:
+            from xpra.platform.gui import get_monitor_geometries
+            geometries = tuple(get_monitor_geometries())
+            if geometries:
+                width = max(x + w for x, _y, w, _h in geometries)
+                height = max(y + h for _x, y, _w, h in geometries)
+                return width, height
+        except Exception:
+            pass
         # the easy way:
         root = get_default_root_window()
         if not root:
