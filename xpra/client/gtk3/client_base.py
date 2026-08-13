@@ -71,7 +71,6 @@ USE_LOCAL_CURSORS = envbool("XPRA_USE_LOCAL_CURSORS", not WIN32 and not is_Wayla
 SAVE_CURSORS = envbool("XPRA_SAVE_CURSORS", False)
 CLIPBOARD_NOTIFY = envbool("XPRA_CLIPBOARD_NOTIFY", True)
 OPENGL_MIN_SIZE = envint("XPRA_OPENGL_MIN_SIZE", 32)
-OSX_DEFER_DESTROY_DELAY = envint("CATLINK_OSX_DEFER_DESTROY_DELAY", 100)
 NO_OPENGL_WINDOW_TYPES = os.environ.get(
     "XPRA_NO_OPENGL_WINDOW_TYPES",
     "DOCK,TOOLBAR,MENU,UTILITY,SPLASH,DROPDOWN_MENU,POPUP_MENU,TOOLTIP,NOTIFICATION,COMBO,DND"
@@ -1625,34 +1624,6 @@ class GTKXpraClient(GObjectXpraClient, UIXpraClient):
             del self._ref_to_group_leader[ref]
         log("last window for refs %s is gone, destroying the group leader %s", refs, group_leader)
         group_leader.close()
-
-    def do_destroy_window(self, wid: int, window) -> None:
-        if not OSX:
-            window.destroy()
-            return
-        # workaround: On macOS, Gtk.Window.destroy() can immediately unrealize the GdkQuartzView
-        # and close the cairo backing while AppKit still has a pending layer display.
-        # Mark the window as closing and hide it now, but defer the full
-        # destroy/cleanup path so GdkQuartzView.updateLayer can drain first.
-        setattr(window, "catlink_destroy_pending", True)
-        try:
-            window.hide()
-        except (RuntimeError, ValueError):
-            log("hide before destroy failed for window %#x / %s", wid, window, exc_info=True)
-        self.catlink_update_dock_visibility("destroy-window-pending")
-
-        def really_destroy() -> bool:
-            try:
-                window.destroy()
-            except (RuntimeError, ValueError):
-                log("deferred destroy failed for window %#x / %s", wid, window, exc_info=True)
-            return False
-
-        delay = max(0, OSX_DEFER_DESTROY_DELAY)
-        if delay:
-            GLib.timeout_add(delay, really_destroy)
-        else:
-            GLib.idle_add(really_destroy)
 
     def setup_clipboard_helper(self, helper_class, options: dict):
         from xpra.client.subsystem.clipboard import ClipboardClient
