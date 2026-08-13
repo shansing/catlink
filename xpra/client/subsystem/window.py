@@ -390,8 +390,6 @@ class WindowClient(StubClientMixin):
 
     @staticmethod
     def catlink_is_dock_window(window) -> bool:
-        if getattr(window, "catlink_destroy_pending", False):
-            return False
         if getattr(window, "is_tray", lambda: False)():
             return False
         if getattr(window, "is_OR", lambda: False)():
@@ -410,7 +408,6 @@ class WindowClient(StubClientMixin):
                 self.catlink_call_window_method(window, "is_visible"),
                 self.catlink_call_window_method(window, "get_visible"),
                 self.catlink_call_window_method(window, "get_mapped"),
-                getattr(window, "catlink_destroy_pending", None),
                 getattr(window, "_iconified", None),
                 getattr(window, "_been_mapped", None),
                 metadata.get("title"),
@@ -1482,7 +1479,7 @@ class WindowClient(StubClientMixin):
 
     def destroy_window(self, wid: int, window) -> None:
         log("destroy_window(%s#x, %s)", wid, window)
-        self.do_destroy_window(wid, window)
+        window.destroy()
         if self._window_with_grab == wid:
             log("destroying window %s which has grab, ungrabbing!", wid)
             self.window_ungrab()
@@ -1503,9 +1500,6 @@ class WindowClient(StubClientMixin):
                     for pid, w in tuple(self._pid_to_signalwatcher.items()):
                         if w == signalwatcher:
                             del self._pid_to_signalwatcher[pid]
-
-    def do_destroy_window(self, wid: int, window) -> None:
-        window.destroy()
 
     def destroy_all_windows(self) -> None:
         for wid, window in self._id_to_window.items():

@@ -194,8 +194,6 @@ class ClientWindow(WindowBaseClass):
 
     def draw_widget(self, widget, context) -> bool:
         paintlog("draw_widget(%s, %s)", widget, context)
-        if getattr(self, "catlink_destroy_pending", False):
-            return False
         if not self.get_mapped():
             return False
         backing = self._backing

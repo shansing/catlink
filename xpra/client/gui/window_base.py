@@ -816,9 +816,6 @@ class ClientWindowBase(ClientWidgetBase):
                     coding: str, img_data, rowstride: int,
                     options: typedict, callbacks: MutableSequence[Callable]):
         """ Note: this runs from the draw thread (not UI thread) """
-        if getattr(self, "catlink_destroy_pending", False):
-            fire_paint_callbacks(callbacks, -1, "window destroy pending")
-            return
         backing = self._backing
         if not backing:
             log("draw_region: window %s has no backing, gone?", self.wid)
