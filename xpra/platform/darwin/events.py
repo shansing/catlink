@@ -15,7 +15,8 @@ from Quartz import (
     kCGNullWindowID, kCGWindowListOptionAll,
 )
 from AppKit import (
-    NSObject, NSWorkspace, NSApplication,
+    NSObject, NSWorkspace, NSApplication, NSNotificationCenter,
+    NSApplicationDidChangeScreenParametersNotification,
     NSWorkspaceActiveSpaceDidChangeNotification,
     NSWorkspaceWillPowerOffNotification,
     NSWorkspaceWillSleepNotification,
@@ -49,6 +50,7 @@ class AppDelegate(NSObject):
         objc_self.callbacks: dict[str, list[Callable]] = {}
         objc_self.workspace = None
         objc_self.notificationCenter = None
+        objc_self.screenNotificationCenter = None
         return objc_self
 
     @objc.python_method
@@ -104,6 +106,16 @@ class AppDelegate(NSObject):
         add_observer(self.receiveWakeNotification_, NSWorkspaceDidWakeNotification)
         add_observer(self.receiveWorkspaceChangeNotification_, NSWorkspaceActiveSpaceDidChangeNotification)
 
+    @objc.python_method
+    def register_screen_change_handler(self) -> None:
+        self.screenNotificationCenter = NSNotificationCenter.defaultCenter()
+        self.screenNotificationCenter.addObserver_selector_name_object_(
+            self,
+            self.receiveScreenParametersChangeNotification_,
+            NSApplicationDidChangeScreenParametersNotification,
+            None,
+        )
+
     @objc.typedSelector(b'B@:#B')
     def applicationShouldHandleReopen_hasVisibleWindows_(self, ns_app, flag) -> bool:
         log("applicationShouldHandleReopen_hasVisibleWindows%s", (ns_app, flag))
@@ -148,6 +160,10 @@ class AppDelegate(NSObject):
         log("receiveWakeNotification_(%s)", notification)
         self.call_handlers("resume")
 
+    @objc.typedSelector(b'v@:@')
+    def receiveScreenParametersChangeNotification_(self, notification) -> None:
+        self.call_handlers("screen-change")
+
     @objc.python_method
     def call_handlers(self, name: str, *args) -> None:
         callbacks = self.callbacks.get(name, [])
@@ -181,6 +197,7 @@ def get_app_delegate(create=True) -> AppDelegate:
         delegate.retain()
         if SLEEP_HANDLER:
             delegate.register_sleep_handlers()
+        delegate.register_screen_change_handler()
         delegate.register_file_handler()
         delegate.register_url_handler()
         log("registered!")
