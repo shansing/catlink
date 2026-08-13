@@ -25,7 +25,7 @@ from xpra.util.parsing import (
 )
 from xpra.util.objects import typedict
 from xpra.util.screen import log_screen_sizes
-from xpra.util.env import envbool
+from xpra.util.env import envbool, envint
 from xpra.client.base.stub import StubClientMixin
 from xpra.log import Logger
 
@@ -36,6 +36,7 @@ workspacelog = Logger("client", "workspace")
 scalinglog = Logger("scaling")
 
 MONITOR_CHANGE_REINIT = envbool("XPRA_MONITOR_CHANGE_REINIT", WIN32 or OSX)
+MONITOR_CHANGE_REINIT_DELAY = envint("XPRA_MONITOR_CHANGE_REINIT_DELAY", 500)
 
 
 class DisplayClient(StubClientMixin):
@@ -57,6 +58,7 @@ class DisplayClient(StubClientMixin):
         self.desktop_fullscreen = False
         self.desktop_scaling = False
         self.screen_size_change_timer = 0
+        self.monitor_change_reinit_timer = 0
         self.opengl_enabled: bool = False
         self.opengl_props: dict[str, Any] = {}
         self.client_supports_opengl: bool = False
@@ -73,6 +75,7 @@ class DisplayClient(StubClientMixin):
         self.server_multi_monitors = False
         self.server_monitors = {}
         self.log_screen_info = True
+        self._darwin_screen_change_registered = False
 
     def init(self, opts) -> None:
         self.desktop_fullscreen = opts.desktop_fullscreen
@@ -83,6 +86,10 @@ class DisplayClient(StubClientMixin):
         scalinglog("can_scale(%s)=%s", opts.desktop_scaling, self.can_scale)
         if self.can_scale:
             self.parse_scaling(opts.desktop_scaling)
+        if OSX:
+            from xpra.platform.darwin.events import get_app_delegate
+            get_app_delegate().add_handler("screen-change", self.screen_size_changed)
+            self._darwin_screen_change_registered = True
 
     def parse_scaling(self, desktop_scaling: str) -> None:
         root_w, root_h = self.get_root_size()
@@ -91,6 +98,15 @@ class DisplayClient(StubClientMixin):
         scalinglog("scaling(%s)=%s", self.initial_scaling, (self.xscale, self.yscale))
 
     def cleanup(self) -> None:
+        if self.monitor_change_reinit_timer:
+            GLib.source_remove(self.monitor_change_reinit_timer)
+            self.monitor_change_reinit_timer = 0
+        if self._darwin_screen_change_registered:
+            from xpra.platform.darwin.events import get_app_delegate
+            delegate = get_app_delegate(False)
+            if delegate:
+                delegate.remove_handler("screen-change", self.screen_size_changed)
+            self._darwin_screen_change_registered = False
         ssct = self.screen_size_change_timer
         if ssct:
             self.screen_size_change_timer = 0
@@ -508,9 +524,29 @@ class DisplayClient(StubClientMixin):
         self.update_screen_size()
         log("do_process_screen_size_change() MONITOR_CHANGE_REINIT=%s", MONITOR_CHANGE_REINIT)
         if MONITOR_CHANGE_REINIT:
-            log.info("screen size change: will reinit the windows")
-            self.reinit_windows()
-            self.reinit_window_icons()
+            if OSX:
+                # macOS may report the display topology before AppKit has
+                # settled the new coordinate space. Reinitializing windows
+                # immediately can leave popup windows (search, @-mention,
+                # context menus) at stale positions until they are moved.
+                # Give the topology and window coordinates time to settle.
+                if self.monitor_change_reinit_timer:
+                    GLib.source_remove(self.monitor_change_reinit_timer)
+                log.info("screen size change: will reinit the windows in %sms", MONITOR_CHANGE_REINIT_DELAY)
+                self.monitor_change_reinit_timer = GLib.timeout_add(
+                    MONITOR_CHANGE_REINIT_DELAY,
+                    self._reinit_after_monitor_change,
+                )
+            else:
+                self.reinit_windows()
+                self.reinit_window_icons()
+
+    def _reinit_after_monitor_change(self) -> bool:
+        self.monitor_change_reinit_timer = 0
+        log.info("screen size change: reinitializing windows after topology settled")
+        self.reinit_windows()
+        self.reinit_window_icons()
+        return False
 
     def get_screen_settings(self) -> tuple:
         u_root_w, u_root_h = self.get_root_size()
