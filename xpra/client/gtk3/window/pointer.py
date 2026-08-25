@@ -10,7 +10,7 @@ from collections.abc import Sequence
 
 from xpra.os_util import gi_import, OSX, WIN32
 from xpra.util.objects import typedict
-from xpra.util.env import envint, envbool, IgnoreWarningsContext
+from xpra.util.env import envint, envbool, envfloat, IgnoreWarningsContext
 from xpra.util.str_fn import bytestostr
 from xpra.client.gtk3.window.stub_window import GtkStubWindow
 from xpra.client.gtk3.window.common import mask_buttons
@@ -24,6 +24,9 @@ log = Logger("window", "pointer")
 
 SMOOTH_SCROLL = envbool("XPRA_SMOOTH_SCROLL", True)
 SMOOTH_SCROLL_NORM = envint("XPRA_SMOOTH_SCROLL_NORM", 50 if OSX else 100)
+SMOOTH_SCROLL_SCALE = envfloat("XPRA_SMOOTH_SCROLL_SCALE", 1.0)
+SMOOTH_SCROLL_MAX = envfloat("XPRA_SMOOTH_SCROLL_MAX", 0)
+SMOOTH_SCROLL_LOG = envbool("XPRA_SMOOTH_SCROLL_LOG", False)
 SIMULATE_MOUSE_DOWN = envbool("XPRA_SIMULATE_MOUSE_DOWN", True)
 SIMULATE_MOUSE_UP = envbool("XPRA_SIMULATE_MOUSE_UP", True)
 BUTTON_POLLING_DELAY = envint("XPRA_BUTTON_POLLING_DELAY", 50)
@@ -65,9 +68,13 @@ def _get_relative_pointer(event) -> tuple[int, int]:
 
 def norm_scroll(value: float):
     if SMOOTH_SCROLL_NORM == 100:
-        return value
-    smoothed = math.pow(abs(value), SMOOTH_SCROLL_NORM / 100)
-    return math.copysign(smoothed, value)
+        normalized = value
+    else:
+        normalized = math.copysign(math.pow(abs(value), SMOOTH_SCROLL_NORM / 100), value)
+    normalized *= SMOOTH_SCROLL_SCALE
+    if SMOOTH_SCROLL_MAX > 0:
+        normalized = max(-SMOOTH_SCROLL_MAX, min(SMOOTH_SCROLL_MAX, normalized))
+    return normalized
 
 
 class PointerWindow(GtkStubWindow):
@@ -311,6 +318,10 @@ class PointerWindow(GtkStubWindow):
             device_id = -1
             norm_x = norm_scroll(event.delta_x)
             norm_y = norm_scroll(event.delta_y)
+            if SMOOTH_SCROLL_LOG:
+                log.info("smooth scroll delta raw=(%.6f,%.6f) normalized=(%.6f,%.6f) norm=%s scale=%.6f max=%.6f",
+                         event.delta_x, event.delta_y, norm_x, norm_y,
+                         SMOOTH_SCROLL_NORM, SMOOTH_SCROLL_SCALE, SMOOTH_SCROLL_MAX)
             self._client.wheel_event(device_id, self.wid, norm_x, -norm_y, pointer)
             return True
         button_mapping = GDK_SCROLL_MAP.get(event.direction, -1)
