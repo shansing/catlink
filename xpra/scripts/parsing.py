@@ -1000,6 +1000,7 @@ def parse_command_line(cmdline: list[str], defaults: XpraConfig):
         "download-path": defaults.download_path,
         "catlink-im-preedit": defaults.catlink_im_preedit,
         "catlink-im-enhanced-mode": defaults.catlink_im_enhanced_mode,
+        "catlink-disconnect-on-last-normal-window": defaults.catlink_disconnect_on_last_normal_window,
     }
     gettext = getattr(optparse, "gettext", lambda x: x)
     parser.add_option("-V",

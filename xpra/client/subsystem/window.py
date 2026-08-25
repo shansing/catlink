@@ -275,6 +275,7 @@ class WindowClient(StubClientMixin):
         self.bell_enabled: bool = False
 
         self.window_close_action: str = "forward"
+        self.catlink_disconnect_on_last_normal_window = False
         self.modal_windows: bool = True
         self.catlink_dock_policy = None
 
@@ -315,6 +316,11 @@ class WindowClient(StubClientMixin):
             self.pixel_depth = 0
 
         self.windows_enabled = opts.windows
+        self.catlink_disconnect_on_last_normal_window = bool(
+            getattr(opts, "catlink_disconnect_on_last_normal_window", False)
+        )
+        log.info("catlink-disconnect-on-last-normal-window=%s",
+                 self.catlink_disconnect_on_last_normal_window)
         if self.windows_enabled:
             if opts.window_close not in ("forward", "ignore", "disconnect", "shutdown", "auto"):
                 self.window_close_action = "forward"
@@ -1411,6 +1417,10 @@ class WindowClient(StubClientMixin):
     # noinspection PyUnreachableCode
     def window_close_event(self, wid: int) -> None:
         log("window_close_event(%s) close window action=%s", wid, self.window_close_action)
+        if self.catlink_disconnect_on_last_normal_window and self._is_last_normal_window(wid):
+            log.info("catlink close policy: disconnecting on last normal window %#x", wid)
+            self.quit(0)
+            return
         if self.window_close_action == "forward":
             self.send("close-window", wid)
         elif self.window_close_action == "ignore":
@@ -1452,6 +1462,24 @@ class WindowClient(StubClientMixin):
             self.send("close-window", wid)
         else:
             log.warn("unknown close-window action: %s", self.window_close_action)
+
+    def _is_normal_top_level_window(self, window) -> bool:
+        if window is None or window.is_OR() or window.is_tray():
+            return False
+        metadata = typedict(getattr(window, "_metadata", {}))
+        if metadata.intget("transient-for", 0) > 0:
+            return False
+        window_types = set(metadata.strtupleget("window-type"))
+        if window_types and "NORMAL" not in window_types:
+            return False
+        return True
+
+    def _is_last_normal_window(self, wid: int) -> bool:
+        window = self._id_to_window.get(wid)
+        if not self._is_normal_top_level_window(window):
+            return False
+        return sum(1 for other_wid, other in self._id_to_window.items()
+                   if other_wid != wid and self._is_normal_top_level_window(other)) == 0
 
     def _process_lost_window(self, packet: Packet) -> None:
         wid = packet.get_wid()
