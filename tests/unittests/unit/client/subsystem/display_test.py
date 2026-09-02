@@ -14,6 +14,50 @@ from unit.client.subsystem.clientmixintest_util import ClientMixinTest
 
 class DisplayClientTest(ClientMixinTest):
 
+    def test_screen_topology_signature_ignores_workarea(self):
+        from xpra.client.subsystem.display import DisplayClient
+
+        settings = (
+            3840, 2160,
+            (("screen", 3840, 2160, 700, 400,
+              (("monitor", 0, 0, 3840, 2160, 700, 400, 0, 60, 3840, 1988),),
+              0, 60, 3840, 1988),),
+            1, (), 3840, 2160, 144, 144, 60,
+            {0: {"geometry": (0, 0, 3840, 2160), "scale-factor": 2}},
+        )
+        dock_resized = settings[:2] + (
+            (("screen", 3840, 2160, 700, 400,
+              (("monitor", 0, 0, 3840, 2160, 700, 400, 0, 60, 3840, 1990),),
+              0, 60, 3840, 1990),),
+        ) + settings[3:]
+        self.assertEqual(
+            DisplayClient._screen_topology_signature(settings),
+            DisplayClient._screen_topology_signature(dock_resized),
+        )
+
+    def test_screen_topology_signature_detects_geometry_change(self):
+        from xpra.client.subsystem.display import DisplayClient
+
+        settings = (
+            3840, 2160,
+            (("screen", 3840, 2160, 700, 400,
+              (("monitor", 0, 0, 1920, 1080, 700, 400),
+               ("monitor-2", 1920, 0, 1920, 1080, 700, 400)),
+              0, 0, 3840, 2160),),
+            1, (), 3840, 2160, 144, 144, 60,
+            {0: {"geometry": (0, 0, 3840, 2160), "scale-factor": 2}},
+        )
+        moved = settings[:2] + (
+            (("screen", 3840, 2160, 700, 400,
+              (("monitor", 0, 0, 1280, 1080, 700, 400),
+               ("monitor-2", 1280, 0, 2560, 1080, 700, 400)),
+              0, 0, 3840, 2160),),
+        ) + settings[3:]
+        self.assertNotEqual(
+            DisplayClient._screen_topology_signature(settings),
+            DisplayClient._screen_topology_signature(moved),
+        )
+
     def test_display(self):
         with DisplayContext():
             from xpra.client.subsystem import display  # pylint: disable=import-outside-toplevel

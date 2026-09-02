@@ -521,9 +521,15 @@ class DisplayClient(StubClientMixin):
 
     def do_process_screen_size_change(self) -> None:
         self.screen_size_change_timer = 0
-        self.update_screen_size()
-        log("do_process_screen_size_change() MONITOR_CHANGE_REINIT=%s", MONITOR_CHANGE_REINIT)
-        if MONITOR_CHANGE_REINIT:
+        topology_changed = self.update_screen_size()
+        log.info("screen size change decision: topology_changed=%s, monitor_change_reinit=%s",
+                  topology_changed, MONITOR_CHANGE_REINIT)
+        if not topology_changed:
+            if MONITOR_CHANGE_REINIT:
+                log.info("screen size change: topology unchanged, will not reinit the windows")
+            else:
+                log.info("screen size change: window reinit is disabled, will not reinit the windows")
+        elif MONITOR_CHANGE_REINIT:
             if OSX:
                 # macOS may report the display topology before AppKit has
                 # settled the new coordinate space. Reinitializing windows
@@ -573,14 +579,45 @@ class DisplayClient(StubClientMixin):
         monitors = self.get_monitors_info()
         return root_w, root_h, sss, ndesktops, desktop_names, u_root_w, u_root_h, xdpi, ydpi, vrefresh, monitors
 
-    def update_screen_size(self) -> None:
+    @staticmethod
+    def _screen_topology_signature(screen_settings: tuple) -> tuple:
+        """Return display geometry relevant to window coordinate placement.
+
+        Workareas are intentionally excluded: on macOS their height can change
+        while the Dock animates or resizes, without changing the monitor layout.
+        """
+        root_size = tuple(screen_settings[:2])
+        screen_sizes = screen_settings[2] or ()
+        monitor_geometry = []
+        for screen in screen_sizes:
+            if len(screen) < 6:
+                continue
+            monitors = screen[5] or ()
+            monitor_geometry.extend(
+                tuple(monitor[1:5])
+                for monitor in monitors
+                if len(monitor) >= 5
+            )
+        monitors = screen_settings[10] or {}
+        monitor_info = []
+        for index in sorted(monitors):
+            monitor = monitors[index] or {}
+            monitor_info.append((index, monitor.get("geometry"), monitor.get("scale-factor")))
+        return root_size, tuple(monitor_geometry), tuple(monitor_info)
+
+    def update_screen_size(self) -> bool:
         self.screen_size_change_timer = 0
         screen_settings = self.get_screen_settings()
         log("update_screen_size()     new settings=%s", screen_settings)
         log("update_screen_size() current settings=%s", self._last_screen_settings)
         if self._last_screen_settings == screen_settings:
             log("screen size unchanged")
-            return
+            return False
+        topology_changed = (
+            not self._last_screen_settings
+            or self._screen_topology_signature(self._last_screen_settings)
+            != self._screen_topology_signature(screen_settings)
+        )
         root_w, root_h, sss = screen_settings[:3]
         log_screen_sizes(root_w, root_h, sss)
         root_w, root_h = screen_settings[:2]
@@ -625,6 +662,7 @@ class DisplayClient(StubClientMixin):
         self._last_screen_settings = screen_settings
         # update the max packet size (may have gone up):
         self.set_max_packet_size()
+        return topology_changed
 
     def get_xdpi(self) -> int:
         return get_xdpi()
