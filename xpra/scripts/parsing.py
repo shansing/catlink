@@ -1001,6 +1001,7 @@ def parse_command_line(cmdline: list[str], defaults: XpraConfig):
         "catlink-im-preedit": defaults.catlink_im_preedit,
         "catlink-im-enhanced-mode": defaults.catlink_im_enhanced_mode,
         "catlink-disconnect-on-last-normal-window": defaults.catlink_disconnect_on_last_normal_window,
+        "catlink-client-uuid": defaults.catlink_client_uuid,
     }
     gettext = getattr(optparse, "gettext", lambda x: x)
     parser.add_option("-V",

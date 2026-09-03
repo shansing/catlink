@@ -114,6 +114,7 @@ class XpraClientBase(ClientBaseClass):
         self.completed_startup = False
         self.uuid: str = get_user_uuid()
         self.session_id: str = uuid.uuid4().hex
+        self.catlink_client_uuid = ""
         self.have_more = noop
 
     def init(self, opts) -> None:
@@ -126,6 +127,7 @@ class XpraClientBase(ClientBaseClass):
             bc.init(self, opts)
         self.compression_level = opts.compression_level
         self.display = opts.display
+        self.catlink_client_uuid = opts.catlink_client_uuid
         self.install_signal_handlers()
 
     def may_notify(self, nid: int | NotificationID, summary: str, body: str, *args, **kwargs) -> None:
@@ -324,6 +326,9 @@ class XpraClientBase(ClientBaseClass):
             "compression_level": self.compression_level,
             "version": vparts(XPRA_VERSION, FULL_INFO + 1),
         }
+        catlink_client_uuid = self.catlink_client_uuid
+        if catlink_client_uuid:
+            capabilities["catlink-client-uuid"] = catlink_client_uuid
         if self.display:
             capabilities["display"] = self.display
         if FULL_INFO > 0:
