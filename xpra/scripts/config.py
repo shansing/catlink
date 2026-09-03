@@ -682,6 +682,7 @@ OPTION_TYPES: dict[str, Any] = {
     "file-transfer"     : str,
     "printing"          : str,
     "headerbar"         : str,
+    "catlink-client-uuid": str,
     "challenge-handlers": list,
     # ssl options:
     "ssl"               : str,
@@ -874,6 +875,7 @@ CLIENT_OPTIONS: list[str] = [
     "file-transfer", "file-size-limit", "download-path",
     "open-command", "open-files", "printing", "open-url",
     "headerbar",
+    "catlink-client-uuid",
     "challenge-handlers",
     "remote-logging",
     "lpadmin", "lpinfo",
@@ -1140,6 +1142,7 @@ def get_defaults() -> dict[str, Any]:
         "file-transfer"     : "auto",
         "printing"          : "yes",
         "headerbar"         : ["auto", "no"][OSX or WIN32],
+        "catlink-client-uuid": "",
         "challenge-handlers": ["all"],
         # ssl options:
         "ssl"               : "auto",
