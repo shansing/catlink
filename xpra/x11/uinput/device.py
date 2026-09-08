@@ -19,6 +19,7 @@ log = Logger("x11", "server", "pointer")
 XTest = XTestBindings()
 
 MOUSE_WHEEL_CLICK_MULTIPLIER = envint("XPRA_MOUSE_WHEEL_CLICK_MULTIPLIER", 30)
+MOUSE_WHEEL_PRECISE_MULTIPLIER = envint("XPRA_UINPUT_PRECISE_WHEEL_MULTIPLIER", 3)
 
 BUTTON_STR = {
     BTN_LEFT: "BTN_LEFT",
@@ -95,10 +96,10 @@ class UInputDevice:
 
     def wheel_motion(self, button: int, distance: float) -> None:
         if button in (4, 5):
-            val = distance * MOUSE_WHEEL_CLICK_MULTIPLIER
+            val = distance * MOUSE_WHEEL_PRECISE_MULTIPLIER
             ubutton = REL_WHEEL
         elif button in (6, 7):
-            val = distance * MOUSE_WHEEL_CLICK_MULTIPLIER
+            val = distance * MOUSE_WHEEL_PRECISE_MULTIPLIER
             ubutton = REL_HWHEEL
         else:
             log.warn("Warning: %s", self)

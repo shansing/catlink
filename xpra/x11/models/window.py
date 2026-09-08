@@ -5,6 +5,7 @@
 # later version. See the file COPYING for details.
 
 from typing import Final
+from time import monotonic
 from math import ceil, floor
 
 from xpra.os_util import gi_import
@@ -269,6 +270,7 @@ class WindowModel(BaseWindowModel):
         self.in_save_set: bool = False
         self.client_reparented: bool = False
         self.kill_count: int = 0
+        self._pending_configure_request_geometry = None
 
         self.call_setup()
 
@@ -634,6 +636,32 @@ class WindowModel(BaseWindowModel):
                 if not X11Window.is_mapped(self.xid):
                     geomlog(f"WindowModel.do_x11_configure_event: client window {self.xid:x} is not visible")
                     return
+                pending = self._pending_configure_request_geometry
+                if pending:
+                    px, py, pw, ph, expires = pending
+                    if monotonic() <= expires:
+                        notify_geometry = (event.x, event.y, event.width, event.height)
+                        if (event.x, event.y) != (px, py):
+                            geomlog.warn(
+                                "Warning: using pending ConfigureRequest position %s "
+                                "instead of ConfigureNotify geometry %s for window %#x",
+                                pending[:4], notify_geometry, self.xid,
+                            )
+                        else:
+                            geomlog(
+                                "using pending ConfigureRequest position %s for ConfigureNotify geometry %s "
+                                "on window %#x",
+                                (px, py), (event.width, event.height), self.xid,
+                            )
+                        self.configure_geometry(px, py, event.width, event.height)
+                        self.update_children()
+                        return
+                    geomlog(
+                        "dropping expired or mismatched pending ConfigureRequest geometry %s; "
+                        "ConfigureNotify is %s for window %#x",
+                        pending[:4], (event.x, event.y, event.width, event.height), self.xid,
+                    )
+                    self._pending_configure_request_geometry = None
                 # event.border_width unused
                 self.configure_geometry(event.x, event.y, event.width, event.height)
                 self.update_children()
@@ -740,6 +768,7 @@ class WindowModel(BaseWindowModel):
             # As per ICCCM 4.1.5, even if we ignore the request
             # send back a synthetic ConfigureNotify telling the client that nothing has happened.
             geomlog("geometry unchanged: %s", (x, y, w, h))
+            self._pending_configure_request_geometry = None
             with xlog:
                 X11Window.sendConfigureNotify(self.xid)
             return
@@ -755,6 +784,8 @@ class WindowModel(BaseWindowModel):
             mask |= CWWidth
         if oh != h:
             mask |= CWHeight
+        if mask & (CWX | CWY | CWWidth | CWHeight):
+            self._pending_configure_request_geometry = (x, y, w, h, monotonic() + 2.0)
         with xlog:
             X11Window.configure(self.xid, x, y, w, h, mask)
         # FIXME: consider handling attempts to change stacking order here.

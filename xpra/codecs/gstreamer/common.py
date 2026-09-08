@@ -257,7 +257,7 @@ def get_encoder_info(element="vp8enc") -> dict:
         if caps.is_empty():
             continue
         for i in range(caps.get_size()):
-            structure = caps.get_structure(i)
+            structure = caps[i]
             if structure.get_name() != "video/x-raw":
                 continue
 

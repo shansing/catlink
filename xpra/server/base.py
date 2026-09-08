@@ -388,7 +388,12 @@ class ServerBase(ServerBaseClass):
         return True
 
     def update_all_server_settings(self, reset: bool = False) -> None:
-        pass  # may be overridden in subclasses (ie: x11 server)
+        # X11ServerBase used to override this method. Since the implementation
+        # moved to XSettingsServer, this ServerBase method must explicitly
+        # dispatch to the dynamically composed subsystem implementation.
+        for base_class in SERVER_BASES:
+            if update := base_class.__dict__.get("update_all_server_settings"):
+                update(self, reset)
 
     ######################################################################
     # hello:

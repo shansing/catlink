@@ -135,7 +135,13 @@ class ClipboardServer(StubServerMixin):
         clipboard_class = "unknown"
         try:
             from xpra.platform.clipboard import get_backend_module
-            clipboard_class = get_backend_module()
+            from xpra.server import features
+            # The shared Linux platform selector prefers GTK for Catlink
+            # clients. X11 servers must keep their native selection helper.
+            if features.x11:
+                clipboard_class = "xpra.x11.selection.clipboard.X11Clipboard"
+            else:
+                clipboard_class = get_backend_module()
             if not clipboard_class:
                 raise RuntimeError("no native clipboard support on this platform")
             parts = clipboard_class.split(".")

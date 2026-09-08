@@ -317,6 +317,11 @@ class ChildCommandServer(StubServerMixin):
         env = restore_script_env(super().get_child_env())
         env.update(self.source_env)
         env.update(self.start_env)
+        # The DbusServer setup runs before child commands. Use its in-memory
+        # environment explicitly, even if the process environment was stale.
+        dbus_env = getattr(self, "dbus_env", None)
+        if dbus_env:
+            env.update(dbus_env)
         if self.child_display:
             env["DISPLAY"] = self.child_display
         return env

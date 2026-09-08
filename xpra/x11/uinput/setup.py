@@ -4,6 +4,7 @@
 # later version. See the file COPYING for details.
 
 import os
+from time import monotonic, sleep
 from typing import Any
 
 from xpra.util.env import envbool
@@ -181,3 +182,45 @@ def create_uinput_devices(uinput_uuid: str, uid: int) -> dict[str, Any]:
 
 def create_input_devices(uinput_uuid: str, uid: int) -> dict[str, Any]:
     return create_uinput_devices(uinput_uuid, uid)
+
+
+def wait_for_input_devices(devices: dict[str, Any], timeout: float = 3) -> bool:
+    """Wait until udev has classified new devices before Xorg enumerates them."""
+    expected_properties = {
+        "pointer": b"E:ID_INPUT_MOUSE=1",
+        "touchpad": b"E:ID_INPUT_TOUCHPAD=1",
+    }
+    pending: dict[str, tuple[str, bytes]] = {}
+    for device_type, device in devices.items():
+        device_path = device.get("device")
+        expected = expected_properties.get(device_type)
+        if device_path and expected:
+            pending[device_path] = (device_type, expected)
+    if not pending:
+        return True
+
+    log = get_logger()
+    deadline = monotonic() + timeout
+    while pending and monotonic() < deadline:
+        for device_path, (device_type, expected) in tuple(pending.items()):
+            try:
+                device_stat = os.stat(device_path)
+                major = os.major(device_stat.st_rdev)
+                minor = os.minor(device_stat.st_rdev)
+                udev_data = f"/run/udev/data/c{major}:{minor}"
+                with open(udev_data, "rb") as data_file:
+                    properties = data_file.read()
+                if expected in properties:
+                    log("udev classified %s device %s", device_type, device_path)
+                    pending.pop(device_path)
+            except (FileNotFoundError, PermissionError, OSError):
+                pass
+        if pending:
+            sleep(0.05)
+
+    if pending:
+        log.warn("Warning: udev did not classify uinput devices before Xorg startup:")
+        for device_path, (device_type, _expected) in pending.items():
+            log.warn(" %s device %s", device_type, device_path)
+        return False
+    return True

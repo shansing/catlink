@@ -158,6 +158,7 @@ class ClientConnection(StubClientConnection):
 
     def startup_complete(self) -> None:
         log("startup_complete()")
+        self.catlink_startup_complete = True
         self.send("startup-complete")
 
     # The encode thread loop management:

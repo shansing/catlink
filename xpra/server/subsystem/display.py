@@ -467,27 +467,21 @@ class DisplayManager(StubServerMixin):
         log("calculate_workarea(%s, %s)", maxw, maxh)
         workarea = rectangle(0, 0, maxw, maxh)
         for ss in self._server_sources.values():
-            screen_sizes = ss.screen_sizes
-            log("calculate_workarea() screen_sizes(%s)=%s", ss, screen_sizes)
-            if not screen_sizes:
+            client_workarea = ss.get_client_workarea()
+            log("calculate_workarea() workarea(%s)=%s", ss, client_workarea)
+            if not client_workarea:
                 continue
-            for display in screen_sizes:
-                # avoid error with old/broken clients:
-                if not display or not isinstance(display, (list, tuple)):
-                    continue
-                # display: [':0.0', 2560, 1600, 677, 423, [['DFP2', 0, 0, 2560, 1600, 646, 406]], 0, 0, 2560, 1574]
-                if len(display) >= 10:
-                    work_x, work_y, work_w, work_h = display[6:10]
-                    display_workarea = rectangle(work_x, work_y, work_w, work_h)
-                    log("calculate_workarea() found %s for display %s", display_workarea, display[0])
-                    workarea = workarea.intersection_rect(display_workarea)
-                    if not workarea:
-                        log.warn("Warning: failed to calculate workarea")
-                        log.warn(" as intersection of %s and %s", (maxw, maxh), (work_x, work_y, work_w, work_h))
+            common_workarea = workarea.intersection_rect(client_workarea)
+            if not common_workarea:
+                log.warn("Warning: failed to calculate workarea")
+                log.warn(" as intersection of %s and %s", (maxw, maxh), client_workarea)
+                workarea = None
+                break
+            workarea = common_workarea
         # sanity checks:
         log("calculate_workarea(%s, %s) workarea=%s", maxw, maxh, workarea)
         max_dim = 32768 - 8192
-        if workarea.width == 0 or workarea.height == 0 or workarea.width >= max_dim or workarea.height >= max_dim:
+        if not workarea or workarea.width == 0 or workarea.height == 0 or workarea.width >= max_dim or workarea.height >= max_dim:
             log.warn("Warning: failed to calculate a common workarea")
             log.warn(f" using the full display area: {maxw}x{maxh}")
             workarea = rectangle(0, 0, maxw, maxh)

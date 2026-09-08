@@ -4,8 +4,9 @@
 # later version. See the file COPYING for details.
 
 import os
+import sys
 from typing import Any
-from subprocess import Popen
+from subprocess import DEVNULL, Popen
 from collections.abc import Sequence
 
 from xpra.os_util import gi_import, POSIX
@@ -31,6 +32,47 @@ log = Logger("screen")
 grablog = Logger("server", "grab")
 
 DUMMY_WIDTH_HEIGHT_MM = envbool("XPRA_DUMMY_WIDTH_HEIGHT_MM", True)
+
+
+def _poll_randr_refresh(process: Popen) -> bool:
+    if process.poll() is None:
+        GLib.timeout_add(250, _poll_randr_refresh, process)
+    return False
+
+
+def _refresh_monitor_state(monitor_defs: dict, remaining: int = 40) -> bool:
+    """Refresh Dummy RandR, then query it from a separate X11 connection."""
+    try:
+        from xpra.x11.bindings.randr import RandRBindings
+        with xsync:
+            monitors = RandRBindings().get_all_screen_properties().get("monitors", {})
+
+        def geometry(monitor):
+            if "geometry" in monitor:
+                return tuple(monitor["geometry"])
+            return (
+                monitor.get("x", 0), monitor.get("y", 0),
+                monitor.get("width", 0), monitor.get("height", 0),
+            )
+
+        expected = {geometry(monitor) for monitor in monitor_defs.values()}
+        actual = {geometry(monitor) for monitor in monitors.values()}
+        if expected == actual:
+            # A separate X11 client query makes Dummy publish the completed
+            # topology and sends the RandR notifications that Qt/XCB clients need.
+            process = Popen(
+                (sys.executable, "-m", "xpra.x11.bindings.randr_info"),
+                stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL, close_fds=True,
+            )
+            GLib.timeout_add(250, _poll_randr_refresh, process)
+            return False
+        if remaining <= 1:
+            return False
+    except Exception:
+        log("post-configure RandR refresh failed", exc_info=True)
+        return False
+    GLib.timeout_add(250, _refresh_monitor_state, monitor_defs, remaining - 1)
+    return False
 
 
 def x11_ungrab() -> None:
@@ -607,6 +649,7 @@ class X11DisplayManager(DisplayManager):
         log("refresh-rate adjusted using %s: %s", self.refresh_rate, mdef)
         with xlog:
             RandRBindings().set_crtc_config(mdef)
+        GLib.timeout_add(250, _refresh_monitor_state, mdef)
         return mdef
 
     def notify_dpi_warning(self, body: str) -> None:
