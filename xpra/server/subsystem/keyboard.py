@@ -11,6 +11,7 @@ from time import monotonic
 from xpra.os_util import gi_import
 from xpra.util.str_fn import bytestostr, Ellipsizer
 from xpra.util.objects import typedict
+from xpra.util.env import envbool
 from xpra.common import noerr, BACKWARDS_COMPATIBLE
 from xpra.net.common import Packet
 from xpra.server.subsystem.stub import StubServerMixin
@@ -19,6 +20,16 @@ from xpra.log import Logger
 GLib = gi_import("GLib")
 
 log = Logger("keyboard")
+CATLINK_IM_CURSOR_ENHANCED_MODE = envbool("CATLINK_IM_CURSOR_ENHANCED_MODE", False)
+CATLINK_IM_SINGLE_KEY_MODIFIERS = frozenset(("lock", "mod2"))
+CATLINK_IM_ENTER_KEYNAMES = frozenset(("Return", "KP_Enter", "ISO_Enter"))
+
+def catlink_im_synthetic_tap_kind(name: str, keystr: str) -> str:
+    if name in CATLINK_IM_ENTER_KEYNAMES:
+        return "space"
+    if len(keystr) == 1 and keystr.isascii() and (keystr.isalnum() or keystr == " "):
+        return "same"
+    return ""
 
 
 class KeyboardServer(StubServerMixin):
@@ -217,6 +228,11 @@ class KeyboardServer(StubServerMixin):
         log("process_key_action(%s) server keycode=%s, group=%i", packet, keycode, group)
         if group >= 0 and keycode >= 0:
             self.set_keyboard_layout_group(group)
+        synthetic_keycode = keycode
+        synthetic_keyname = keyname
+        if CATLINK_IM_CURSOR_ENHANCED_MODE and not pressed and keyname in CATLINK_IM_ENTER_KEYNAMES:
+            synthetic_keycode, _ = self.get_keycode(ss, 0, "space", False, [], 0x20, " ", group)
+            synthetic_keyname = "space"
         # currently unused: (group, is_modifier) = packet[8:10]
         self._focus(ss, wid, None)
         ss.make_keymask_match(modifiers, keycode, ignored_modifier_keynames=[keyname])
@@ -225,7 +241,8 @@ class KeyboardServer(StubServerMixin):
         if keycode >= 0:
             try:
                 is_mod = ss.is_modifier(keyname, keycode)
-                self._handle_key(wid, pressed, keyname, keyval, keycode, modifiers, is_mod, ss.keyboard_config.sync)
+                self._handle_key(wid, pressed, keyname, keyval, keycode, modifiers, is_mod,
+                                 ss.keyboard_config.sync, keystr, synthetic_keycode, synthetic_keyname)
             except Exception as e:
                 log("process_key_action%s", (proto, packet), exc_info=True)
                 log.error("Error: failed to %s key", ["unpress", "press"][pressed])
@@ -243,7 +260,8 @@ class KeyboardServer(StubServerMixin):
             self.keyboard_device.press_key(keycode, press)
 
     def _handle_key(self, wid: int, pressed: bool, name: str, keyval: int, keycode: int,
-                    modifiers: list, is_mod: bool = False, sync: bool = True):
+                    modifiers: list, is_mod: bool = False, sync: bool = True, keystr: str = "",
+                    synthetic_keycode: int = -1, synthetic_keyname: str = ""):
         """
             Does the actual press/unpress for keys
             Either from a packet (_process_key_action) or timeout (_key_repeat_timeout)
@@ -255,7 +273,8 @@ class KeyboardServer(StubServerMixin):
         if keycode < 0:
             log.warn("ignoring invalid keycode=%s", keycode)
             return
-        if keycode in self.keys_timedout:
+        key_timedout = keycode in self.keys_timedout
+        if key_timedout:
             del self.keys_timedout[keycode]
 
         def press() -> None:
@@ -268,6 +287,12 @@ class KeyboardServer(StubServerMixin):
             if keycode in self.keys_pressed:
                 del self.keys_pressed[keycode]
             self.fake_key(keycode, False)
+
+        def tap(tap_keycode: int, tap_name: str) -> None:
+            self.keys_pressed[tap_keycode] = tap_name
+            self.fake_key(tap_keycode, True)
+            del self.keys_pressed[tap_keycode]
+            self.fake_key(tap_keycode, False)
 
         if pressed:
             if keycode not in self.keys_pressed:
@@ -283,7 +308,16 @@ class KeyboardServer(StubServerMixin):
             if keycode in self.keys_pressed:
                 unpress()
             else:
-                log("handle keycode %s: key %s was already unpressed, ignoring", keycode, name)
+                tap_kind = catlink_im_synthetic_tap_kind(name, keystr)
+                tap_keycode = synthetic_keycode if tap_kind == "space" else keycode
+                tap_name = synthetic_keyname if tap_kind == "space" else name
+                if (CATLINK_IM_CURSOR_ENHANCED_MODE and not key_timedout and not is_mod
+                        and (not wid or wid in self._id_to_window)
+                        and not (set(modifiers) - CATLINK_IM_SINGLE_KEY_MODIFIERS)
+                        and tap_kind and tap_keycode > 0 and tap_keycode not in self.keys_pressed):
+                    tap(tap_keycode, tap_name)
+                else:
+                    log("handle keycode %s: key %s was already unpressed, ignoring", keycode, name)
         if not is_mod and sync and self.key_repeat_delay > 0 and self.key_repeat_interval > 0:
             self._key_repeat(wid, pressed, name, keyval, keycode, modifiers, is_mod, self.key_repeat_delay)
 

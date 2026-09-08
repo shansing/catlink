@@ -43,6 +43,8 @@ class ClientInfoConnection(StubClientConnection):
     def init_state(self) -> None:
         self.uuid = ""
         self.session_id = ""
+        self.catlink_client_uuid = ""
+        self.catlink_startup_complete = False
         self.machine_id = ""
         self.hostname = ""
         self.username = ""
@@ -74,6 +76,7 @@ class ClientInfoConnection(StubClientConnection):
     def parse_client_caps(self, c: typedict) -> None:
         self.uuid = c.strget("uuid")
         self.session_id = c.strget("session-id")
+        self.catlink_client_uuid = c.strget("catlink-client-uuid")
         self.machine_id = c.strget("machine_id")
         self.hostname = c.strget("hostname")
         self.username = c.strget("username")
@@ -149,6 +152,7 @@ class ClientInfoConnection(StubClientConnection):
     def get_info(self) -> dict[str, Any]:
         info: dict[str, Any] = {
             "sharing": bool(self.sharing),
+            "catlink-startup-complete": bool(self.catlink_startup_complete),
         }
         if self.client_version:
             info["version"] = vparts(self.client_version, FULL_INFO + 1)
@@ -159,7 +163,7 @@ class ClientInfoConnection(StubClientConnection):
             if v:
                 info[key.replace("_", "-")] = v
 
-        for k in ("session-id", "uuid"):
+        for k in ("session-id", "uuid", "catlink-client-uuid"):
             addattr(k)
         if FULL_INFO > 1:
             for k in ("user", "name", "argv"):

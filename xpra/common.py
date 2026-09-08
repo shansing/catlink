@@ -328,8 +328,13 @@ def adjust_monitor_refresh_rate(refresh_rate: str, mdef: dict[int, dict]) -> dic
         # make a copy, don't modify in place!
         # (as this may be called multiple times on the same input dict)
         mprops = dict(monitor)
-        if refresh_rate != "auto":
-            value = int(monitor.get("refresh-rate", DEFAULT_REFRESH_RATE))
+        value = int(monitor.get("refresh-rate", DEFAULT_REFRESH_RATE))
+        if refresh_rate == "auto":
+            # Older RandR bindings expect Xpra refresh-rate values in mHz,
+            # but some clients report monitor refresh in Hz.
+            if 0 < value < 1000:
+                mprops["refresh-rate"] = value * 1000
+        else:
             value = get_refresh_rate_for_value(refresh_rate, value, 1000)
             if value:
                 mprops["refresh-rate"] = value

@@ -154,6 +154,12 @@ class XSettingsServer(StubServerMixin):
         log(f" {dpi=}")
         log(f" {double_click_time=}, {double_click_distance=}")
         log(f" {antialias=}")
+        if dpi > 0:
+            # DPI is already adjusted for the client's desktop scaling.  The
+            # client applies that scaling again to cursor bitmaps it receives.
+            # Keep the server-side cursor theme in this logical coordinate
+            # space to avoid scaling it twice.
+            cursor_size = max(1, round(24 * dpi / 96))
         # older versions may send keys as "bytes":
         settings = {bytestostr(k): v for k, v in settings.items()}
         self._settings.update(settings)
@@ -242,6 +248,7 @@ class XSettingsServer(StubServerMixin):
 
                 if dpi > 0:
                     v = set_xsettings_int("Xft/DPI", dpi * 1024)
+                    v = set_xsettings_int("Gtk/CursorThemeSize", cursor_size)
                 if double_click_time > 0:
                     v = set_xsettings_int("Net/DoubleClickTime", double_click_time)
                 if antialias:

@@ -1153,7 +1153,7 @@ class WindowSource(WindowIconSource):
                              current_encoding: str, encoding_options: Sequence[str]) -> str:
         co = encoding_options
         if not co:
-            raise ValueError("no options to choose from")
+            co = ("webp", "avif")
         depth = self.image_depth
         grayscale = self.encoding == "grayscale"
         alpha = self._want_alpha or self.is_tray

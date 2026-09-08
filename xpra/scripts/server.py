@@ -279,7 +279,7 @@ def set_server_features(opts, mode: str) -> None:
         elif mode == "shadow":
             x11 = POSIX
         elif mode == "seamless":
-            x11 = opts.backend == "auto"
+            x11 = opts.backend in ("auto", "gtk")
         else:
             x11 = False
         features.debug = features.debug or b(opts.debug)
@@ -1199,7 +1199,8 @@ def do_run_server(script_file: str, cmdline: list[str], error_cb: Callable, opts
         use_uinput = False
         if opts.backend != "wayland":
             try:
-                from xpra.x11.uinput.setup import has_uinput, create_input_devices, UINPUT_UUID_LEN
+                from xpra.x11.uinput.setup import (
+                    has_uinput, create_input_devices, wait_for_input_devices, UINPUT_UUID_LEN)
                 use_uinput = not (shadowing or proxying or encoder or runner) and opts.input_devices.lower() in (
                     "uinput", "auto",
                 ) and has_uinput()
@@ -1215,6 +1216,10 @@ def do_run_server(script_file: str, cmdline: list[str], error_cb: Callable, opts
                 # this only needs to be fairly unique:
                 uinput_uuid = get_rand_chars(UINPUT_UUID_LEN).decode("latin1")
                 write_session_file("uinput-uuid", uinput_uuid)
+                # Create and classify virtual devices before Xorg enumerates
+                # input devices. Container udev hotplug delivery is unreliable.
+                devices = create_input_devices(uinput_uuid, uid) or {}
+                wait_for_input_devices(devices)
             vfb_geom: tuple | None = ()
             resize = opts.resize_display.lower()
             if resize not in ALL_BOOLEAN_OPTIONS and resize != "auto":
@@ -1276,7 +1281,7 @@ def do_run_server(script_file: str, cmdline: list[str], error_cb: Callable, opts
             log(f"reloaded xvfb.pid={xvfb_pid} from session file")
             if use_uinput:
                 uinput_uuid = load_session_file("uinput-uuid").decode("latin1")
-        if uinput_uuid:
+        if uinput_uuid and not devices:
             devices = create_input_devices(uinput_uuid, uid) or {}
 
     def check_xvfb(timeout=0) -> bool:

@@ -203,7 +203,7 @@ class DisplayConnection(StubClientConnection):
         monitors = self.screen_sizes[0][5]
         mdef = {}
         for i, m in enumerate(monitors):
-            mdef[int(i)] = {
+            monitor = {
                 "name": bytestostr(m[0]),
                 # "primary"?
                 # "automatic" : True?
@@ -211,4 +211,37 @@ class DisplayConnection(StubClientConnection):
                 "width-mm": round(m[5]),
                 "height-mm": round(m[6]),
             }
+            if len(m) >= 11:
+                monitor["workarea"] = tuple(round(v) for v in m[7:11])
+            mdef[int(i)] = monitor
         return mdef
+
+    def get_client_workarea(self):
+        """Return a complete modern client workarea, or legacy data."""
+        monitors = tuple(self.monitors.values())
+        valid_monitors = []
+        for monitor in monitors:
+            geometry = monitor.get("geometry")
+            if not geometry or len(geometry) != 4 or geometry[2] <= 0 or geometry[3] <= 0:
+                break
+            valid_monitors.append(monitor)
+        else:
+            rects = []
+            for monitor in valid_monitors:
+                workarea = monitor.get("workarea")
+                if not workarea or len(workarea) != 4 or workarea[2] <= 0 or workarea[3] <= 0:
+                    break
+                rects.append(tuple(workarea))
+            else:
+                if rects:
+                    left = min(r[0] for r in rects)
+                    top = min(r[1] for r in rects)
+                    right = max(r[0] + r[2] for r in rects)
+                    bottom = max(r[1] + r[3] for r in rects)
+                    from xpra.util.rectangle import rectangle
+                    return rectangle(left, top, right - left, bottom - top)
+        for display in self.screen_sizes:
+            if isinstance(display, (list, tuple)) and len(display) >= 10 and display[8] > 0 and display[9] > 0:
+                from xpra.util.rectangle import rectangle
+                return rectangle(*display[6:10])
+        return None
