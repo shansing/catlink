@@ -90,6 +90,7 @@ class ClipboardClient(StubClientMixin):
         # only used with the translated clipboard class:
         self.local_clipboard: str = ""
         self.remote_clipboard: str = ""
+        self.catlink_remote_clipboard_download: bool = True
 
     def init(self, opts) -> None:
         self.client_clipboard_type = opts.clipboard
@@ -97,6 +98,7 @@ class ClipboardClient(StubClientMixin):
         self.client_supports_clipboard = (opts.clipboard or "").lower() not in FALSE_OPTIONS
         self.remote_clipboard = opts.remote_clipboard
         self.local_clipboard = opts.local_clipboard
+        self.catlink_remote_clipboard_download = bool(getattr(opts, "catlink_remote_clipboard_download", True))
 
     def cleanup(self) -> None:
         ch = self.clipboard_helper
@@ -105,6 +107,11 @@ class ClipboardClient(StubClientMixin):
             self.clipboard_helper = None
             with log.trap_error(f"Error on clipboard helper {ch} cleanup"):
                 ch.cleanup()
+        bridge = getattr(self, "catlink_clipboard_bridge", None)
+        if bridge:
+            with log.trap_error("Error closing Catlink clipboard bridge"):
+                bridge.close()
+            self.catlink_clipboard_bridge = None
 
     def get_info(self) -> dict[str, dict[str, Any]]:
         info: dict[str, Any] = {
@@ -286,9 +293,26 @@ class ClipboardClient(StubClientMixin):
             # the remote clipboard we want to we sync to (with the translated clipboard only):
             "clipboard.remote": self.remote_clipboard,
         }
+        try:
+            from xpra.clipboard.catlink_bridge import CatlinkClipboardBridge
+            bridge = CatlinkClipboardBridge(lambda *args: None, self.catlink_remote_clipboard_download)
+            if bridge.sock:
+                kwargs["nontext-callback"] = bridge.handle
+                kwargs["catlink-bridge"] = bridge
+                self.catlink_clipboard_bridge = bridge
+        except Exception:
+            if self.catlink_remote_clipboard_download:
+                log.warn("Catlink remote clipboard download unavailable", exc_info=True)
+            else:
+                log.debug("Catlink clipboard bridge unavailable", exc_info=True)
         log("setup_clipboard_helper() kwargs=%s", kwargs)
 
         hc = helper_class(self.clipboard_send, self.clipboard_progress, **kwargs)
+        bridge = getattr(self, "catlink_clipboard_bridge", None)
+        if bridge:
+            bridge.request_target = lambda proxy, target: hc._send_clipboard_request_handler(
+                proxy, proxy._selection, target,
+            )
         hc.set_preferred_targets(self.server_clipboard_preferred_targets)
         hc.set_greedy_client(self.server_clipboard_greedy)
         hc.set_want_targets_client(self.server_clipboard_want_targets)
