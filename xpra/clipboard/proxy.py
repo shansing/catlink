@@ -4,6 +4,8 @@
 # later version. See the file COPYING for details.
 
 import os
+import uuid
+from collections import deque
 from io import BytesIO
 from time import monotonic
 from typing import Any
@@ -117,6 +119,35 @@ class ClipboardProxyCore:
         self._request_contents_events: int = 0
         self._last_targets = ()
         self.preferred_targets = []
+        self._origin_namespace = uuid.uuid4().hex
+        self._origin_counter = 0
+        self._clipboard_origin = ""
+        self._remote_clipboard_origin = ""
+        self._local_clipboard_origins = deque(maxlen=32)
+
+    def set_local_clipboard_origin(self, identity="") -> str:
+        if identity:
+            origin = f"{self._origin_namespace}:{self._selection}:{identity}"
+            if origin == self._clipboard_origin:
+                return origin
+        else:
+            self._origin_counter += 1
+            origin = f"{self._origin_namespace}:{self._selection}:{self._origin_counter}"
+        self._clipboard_origin = origin
+        if origin not in self._local_clipboard_origins:
+            self._local_clipboard_origins.append(origin)
+        return origin
+
+    def set_remote_clipboard_origin(self, origin: str) -> None:
+        self._remote_clipboard_origin = origin
+
+    def is_local_clipboard_origin(self, origin: str) -> bool:
+        return bool(origin and origin in self._local_clipboard_origins)
+
+    def get_clipboard_token_metadata(self) -> dict[str, str]:
+        if not self._clipboard_origin:
+            self.set_local_clipboard_origin()
+        return {"origin": self._clipboard_origin}
 
     def set_direction(self, can_send: bool, can_receive: bool) -> None:
         self._can_send = can_send
@@ -221,7 +252,9 @@ class ClipboardProxyCore:
         pass
 
     def cancel_emit_token(self) -> None:
-        ett = self._emit_token_timer
+        # Some production X11 proxy variants do not initialize the timer
+        # field; cancelling must remain safe when the first token arrives.
+        ett = getattr(self, "_emit_token_timer", 0)
         if ett:
             self._emit_token_timer = 0
             GLib.source_remove(ett)

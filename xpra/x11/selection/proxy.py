@@ -5,6 +5,7 @@
 
 import os
 import struct
+from dataclasses import dataclass, field
 from typing import Sequence, Any, Final
 
 from xpra.util.env import envbool
@@ -76,6 +77,15 @@ TRANSLATED_TARGETS = parse_translated_targets(os.environ.get(
 log("TRANSLATED_TARGETS=%s", TRANSLATED_TARGETS)
 
 
+@dataclass
+class IncrementalData:
+    size: int
+    dtype: str = ""
+    dformat: int = 0
+    chunks: list[bytes] = field(default_factory=list)
+    timer: int = 0
+
+
 class ClipboardProxy(ClipboardProxyCore, GObject.GObject):
     __gsignals__ = {
         "x11-client-message-event": one_arg_signal,
@@ -92,29 +102,39 @@ class ClipboardProxy(ClipboardProxyCore, GObject.GObject):
         ClipboardProxyCore.__init__(self, selection)
         GObject.GObject.__init__(self)
         self.xid: int = xid
+        self.offer_selection_timestamp: int = 0
         self.owned: bool = False
         self._want_targets: bool = False
+        self.offer_owner_xid: int = 0
+        self.offer_id: int = 1
+        self.offer_token_owner_xid: int = 0
+        self.offer_token_timestamp: int = 0
+        self.offer_last_targets: tuple[str, ...] = ()
+        self.offer_last_content: bytes = b""
+        self.offer_last_target = ""
+        self.offer_last_files: tuple[str, ...] = ()
+        self._offer_epoch = 0
         self.remote_requests: dict[str, list[tuple[int, str, str, float]]] = {}
         self.local_requests: dict[str, dict[int, tuple[int, ClipboardCallback]]] = {}
         self.local_request_counter: int = 0
         self.targets: Sequence[str] = ()
         self.target_data: dict[str, tuple[str, int, Any]] = {}
-        self.incr_data_size: int = 0
-        self.incr_data_type: str = ""
-        self.incr_data_chunks: list[bytes] = []
-        self.incr_data_timer: int = 0
+        # Different targets can transfer concurrently within one selection.
+        # An ordinary URI reply must never become a chunk of an INCR image.
+        self.incr_data: dict[str, IncrementalData] = {}
 
-    def reset_incr_data(self) -> None:
-        self.incr_data_size: int = 0
-        self.incr_data_type: str = ""
-        self.incr_data_chunks: list[bytes] = []
-        self.incr_data_timer: int = 0
+    def reset_incr_data(self, prop: str | None = None) -> None:
+        for atom in (tuple(self.incr_data) if prop is None else (prop,)):
+            state = self.incr_data.pop(atom, None)
+            if state and state.timer:
+                GLib.source_remove(state.timer)
 
     def __repr__(self):
         return f"X11ClipboardProxy({self._selection})"
 
     def cleanup(self) -> None:
         log("%s.cleanup()", self)
+        self.reset_incr_data()
         # give up selection:
         # (disabled because this crashes GTK3 on exit)
         # if self.owned:
@@ -137,6 +157,13 @@ class ClipboardProxy(ClipboardProxyCore, GObject.GObject):
         self.cancel_emit_token()
         if not self._enabled:
             return
+        self._invalidate_local_reads()
+        # A reverse-direction claim breaks any previous local offer sequence.
+        self.offer_last_targets = ()
+        self.offer_last_content = b""
+        self.offer_last_target = ""
+        self.offer_last_files = ()
+        self.offer_token_owner_xid = 0
         self._got_token_events += 1
         log("got token, selection=%s, targets=%s, target data=%s, claim=%s, can-receive=%s",
             self._selection, targets, Ellipsizer(target_data), claim, self._can_receive)
@@ -363,12 +390,31 @@ class ClipboardProxy(ClipboardProxyCore, GObject.GObject):
             event, self.owned, owned, xid, self.xid, self._enabled, self._can_send)
         if not self._enabled:
             return
-        if self.owned or not self._can_send or xid == 0:
+        if xid == 0:
+            self.do_owner_changed()
             return
+        if self.owned or not self._can_send:
+            return
+        selection_timestamp = int(getattr(event, "selection_timestamp", 0) or 0)
+        # origin is the stable producer endpoint used for loop suppression.
+        # It is deliberately not the identity of an individual copy.
+        self.set_local_clipboard_origin(f"x11:{xid:x}")
+        self.offer_owner_xid = xid
+        self.offer_selection_timestamp = selection_timestamp
+        # The base owner-change handler schedules already. Set identity first
+        # and do not start a second, competing TARGETS/content read.
         self.do_owner_changed()
-        self.schedule_emit_token()
 
     def schedule_emit_token(self, min_delay: int = 0) -> None:
+        epoch = self._offer_epoch
+        source_metadata = self.get_clipboard_token_metadata()
+
+        def current() -> bool:
+            # Reading TARGETS and then a payload is asynchronous. A local copy
+            # or incoming remote token invalidates BOTH callbacks, otherwise
+            # old bytes can be emitted with a new owner's metadata.
+            return epoch == self._offer_epoch and not self.owned
+
         if not (self._want_targets or self._greedy_client):
             self._have_token = False
             self.emit("send-clipboard-token", ())
@@ -376,12 +422,66 @@ class ClipboardProxy(ClipboardProxyCore, GObject.GObject):
 
         # we need the targets, and the target data for greedy clients:
 
-        def send_token_with_targets() -> None:
-            token_data = (self.targets, )
+        def offer_metadata(otargets: Sequence[str], target: str = "", data: Any = b"", files=()) -> dict:
+            """Assign one id to all representation phases of one copy."""
+            new_targets = tuple(otargets)
+            old_targets = set(self.offer_last_targets)
+            target_set = set(new_targets)
+            expanding = bool(old_targets) and old_targets < target_set
+            same_event = (self.offer_selection_timestamp != 0
+                          and self.offer_selection_timestamp == self.offer_token_timestamp)
+            content = data if target else b""
+            if isinstance(content, str):
+                content = content.encode("utf-8")
+            content = bytes(content)
+            content_changed = bool(target == self.offer_last_target and content
+                                   and self.offer_last_content and content != self.offer_last_content)
+            # Target expansion alone says nothing about content identity:
+            # A.txt -> B.png in the same app expands the same target set.
+            # Only a verified identical file list may extend a copy across
+            # XFixes events. Ordinary later copies (even of A again) get IDs.
+            same_files = bool(files and files == self.offer_last_files)
+            continuation = expanding and same_files and not content_changed
+
+            # offer-id means one user-visible clipboard content snapshot.  It
+            # is not an owner-change counter.  File-backed images publish in
+            # phases: URI/text first, then a strict image-target expansion.
+            # Only that expansion keeps the id across XFixes timestamps.
+            # Shrink/replacement, changed eager content, and a later repeat of
+            # identical content all start a new offer.  Do not regress this to
+            # xid+timestamp or a time window: the former splits one image copy
+            # and the latter merges two fast copies.
+            new_offer = (
+                self.offer_owner_xid != self.offer_token_owner_xid
+                or (bool(old_targets) and not continuation and not same_event)
+                or content_changed
+                or bool(files and self.offer_last_files and files != self.offer_last_files)
+            )
+            if new_offer:
+                self.offer_id += 1
+            self.offer_token_owner_xid = self.offer_owner_xid
+            self.offer_token_timestamp = self.offer_selection_timestamp
+            self.offer_last_targets = new_targets
+            if new_offer or content:
+                self.offer_last_content = content
+                self.offer_last_target = target
+            if new_offer or files:
+                self.offer_last_files = files
+            metadata = dict(source_metadata)
+            metadata["offer-id"] = self.offer_id
+            return metadata
+
+        def send_token_with_targets(files=()) -> None:
+            if not current():
+                return
+            metadata = offer_metadata(self.targets, files=files)
+            token_data = (self.targets, metadata)
             self._have_token = False
             self.emit("send-clipboard-token", token_data)
 
         def with_targets(otargets: Sequence[str]) -> None:
+            if not current():
+                return
             if not self._greedy_client:
                 send_token_with_targets()
                 return
@@ -393,24 +493,47 @@ class ClipboardProxy(ClipboardProxyCore, GObject.GObject):
                 return
             target = targets[0]
 
-            def got_chosen_target(dtype: str, dformat: int, data: Any) -> None:
+            def got_chosen_target(dtype: str, dformat: int, data: Any, files=()) -> None:
+                if not current():
+                    return
                 log("got_chosen_target(%s, %s, %s)", dtype, dformat, Ellipsizer(data))
                 if not (dtype and dformat and data):
-                    send_token_with_targets()
+                    send_token_with_targets(files)
                     return
-                token_data = (targets, (target, dtype, dformat, data))
+                metadata = offer_metadata(otargets, target, data, files)
+                token_data = (otargets, (target, dtype, dformat, data), metadata)
                 self._have_token = False
                 self.emit("send-clipboard-token", token_data)
 
-            self.get_contents(target, got_chosen_target)
+            if "text/uri-list" in otargets:
+                def got_files(dtype, dformat, data):
+                    if not current():
+                        return
+                    from urllib.parse import unquote
+                    raw = data.decode("utf-8", "replace") if isinstance(data, bytes) else str(data or "")
+                    files = tuple(unquote(line.strip()) for line in raw.splitlines()
+                                  if line.strip().startswith("file://")) if dformat == 8 else ()
+                    if target == "text/uri-list":
+                        got_chosen_target(dtype, dformat, data, files)
+                    else:
+                        self.get_contents(target, lambda dt, df, value: got_chosen_target(dt, df, value, files))
+                self.get_contents("text/uri-list", got_files)
+            else:
+                self.get_contents(target, got_chosen_target)
 
         if self.targets:
             with_targets(self.targets)
             return
 
         def got_targets(dtype: str, dformat: int, data: Any) -> None:
-            assert dtype == "ATOM" and dformat == 32
+            if not current():
+                return
+            if dtype != "ATOM" or dformat != 32:
+                send_token_with_targets()
+                return
             self.targets = xatoms_to_strings(data)
+            log.debug("clipboard targets selection=%s owner=%#x targets=%s",
+                     self._selection, X11Window.XGetSelectionOwner(self._selection), self.targets)
             log("got_targets: %s", self.targets)
             with_targets(self.targets)
 
@@ -447,9 +570,19 @@ class ClipboardProxy(ClipboardProxyCore, GObject.GObject):
 
     def do_owner_changed(self) -> None:
         log("do_owner_changed()")
+        self._invalidate_local_reads()
         self.target_data = {}
         self.targets = ()
         super().do_owner_changed()
+
+    def _invalidate_local_reads(self) -> None:
+        self._offer_epoch += 1
+        pending, self.local_requests = self.local_requests, {}
+        self.reset_incr_data()
+        for target, requests in pending.items():
+            for timer, callback in requests.values():
+                GLib.source_remove(timer)
+                callback("ATOM" if target == "TARGETS" else "", 32 if target == "TARGETS" else 0, b"")
 
     def get_contents(self, target: str, got_contents: ClipboardCallback) -> None:
         log("get_contents(%s, %s) owned=%s, have-token=%s",
@@ -465,7 +598,10 @@ class ClipboardProxy(ClipboardProxyCore, GObject.GObject):
                 dtype, dformat, value = target_data
                 got_contents(dtype, dformat, value)
                 return
-        prop = f"{self._selection}-{target}"
+        # A property belongs to an ownership epoch, not just a MIME target.
+        # Otherwise late A-TARGETS can fulfill B's pending TARGETS callback
+        # even though the higher-level callback itself captured B's epoch.
+        prop = f"{self._selection}-{self._offer_epoch}-{target}"
         with xsync:
             owner = X11Window.XGetSelectionOwner(self._selection)
             self.owned = owner == self.xid
@@ -477,7 +613,13 @@ class ClipboardProxy(ClipboardProxyCore, GObject.GObject):
             request_id = self.local_request_counter
             self.local_request_counter += 1
             timer = GLib.timeout_add(CONVERT_TIMEOUT, self.timeout_get_contents, target, request_id)
-            self.local_requests.setdefault(target, {})[request_id] = (timer, got_contents)
+            target_requests = self.local_requests.setdefault(target, {})
+            already_pending = bool(target_requests)
+            target_requests[request_id] = (timer, got_contents)
+            # One property carries one conversion; fan out the result to all
+            # waiters instead of starting overlapping transfers on that atom.
+            if already_pending:
+                return
             log("requesting local XConvertSelection from %s as '%s' into '%s'", get_wininfo(owner), target, prop)
             X11Window.ConvertSelection(self._selection, target, prop, self.xid, time=CurrentTime)
 
@@ -503,46 +645,50 @@ class ClipboardProxy(ClipboardProxyCore, GObject.GObject):
         log("do_property_notify(%s)", event)
         if not self._enabled:
             return
-        # ie: atom="PRIMARY-TARGETS", atom="PRIMARY-STRING"
-        parts = event.atom.split("-", 1)
-        assert len(parts) == 2
-        # selection = parts[0]        # ie: PRIMARY
-        target = parts[1]  # ie: VALUE
+        parts = event.atom.split("-", 2)
+        if len(parts) != 3 or parts[0] != self._selection or parts[1] != str(self._offer_epoch):
+            # Drain obsolete properties (including INCR chunks) without
+            # touching current target caches or delivering current callbacks.
+            with xsync:
+                X11Window.XDeleteProperty(self.xid, event.atom)
+            return
+        target = parts[2]
         try:
             with xsync:
                 dtype, dformat = X11Window.GetWindowPropertyType(self.xid, event.atom, True)
                 data = X11Window.XGetWindowProperty(self.xid, event.atom, dtype, buffer_size=MAX_DATA_SIZE, incr=True)
                 # all the code below deals with INCRemental transfers:
-                if dtype == "INCR" and not self.incr_data_size:
+                state = self.incr_data.get(event.atom)
+                if dtype == "INCR" and state is None:
                     # start of an incremental transfer, extract the size
                     assert dformat == 32
-                    self.incr_data_size = struct.unpack("@L", data)[0]
-                    self.incr_data_chunks = []
-                    self.incr_data_type = ""
-                    log("incremental clipboard data of size %s", self.incr_data_size)
-                    self.reschedule_incr_data_timer()
+                    state = IncrementalData(struct.unpack("@L", data)[0])
+                    self.incr_data[event.atom] = state
+                    log("incremental clipboard data on %s of size %s", event.atom, state.size)
+                    self.reschedule_incr_data_timer(event.atom)
                     X11Window.XDeleteProperty(self.xid, event.atom)
                     return
-                if self.incr_data_size > 0:
+                if state is not None:
                     # incremental is now in progress:
-                    if not self.incr_data_type:
-                        self.incr_data_type = dtype
-                    elif self.incr_data_type != dtype:
+                    if not state.dtype:
+                        state.dtype, state.dformat = dtype, dformat
+                    elif (state.dtype, state.dformat) != (dtype, dformat):
                         log.error("Error: invalid change of data type")
-                        log.error(" from %s to %s", self.incr_data_type, dtype)
-                        self.reset_incr_data()
-                        self.cancel_incr_data_timer()
+                        log.error(" on %s from %s/%s to %s/%s",
+                                  event.atom, state.dtype, state.dformat, dtype, dformat)
+                        self.reset_incr_data(event.atom)
+                        X11Window.XDeleteProperty(self.xid, event.atom)
+                        self.got_local_contents(target, "", 0, b"")
                         return
                     if data:
                         log("got incremental data: %i bytes", len(data))
-                        self.incr_data_chunks.append(data)
-                        self.reschedule_incr_data_timer()
+                        state.chunks.append(data)
+                        self.reschedule_incr_data_timer(event.atom)
                         X11Window.XDeleteProperty(self.xid, event.atom)
                         return
-                    self.cancel_incr_data_timer()
-                    data = b"".join(self.incr_data_chunks)
+                    data = b"".join(state.chunks)
                     log("got incremental data termination, total size=%i bytes", len(data))
-                    self.reset_incr_data()
+                    self.reset_incr_data(event.atom)
                     self.got_local_contents(target, dtype, dformat, data)
                     return
         except PropertyError:
@@ -563,19 +709,19 @@ class ClipboardProxy(ClipboardProxyCore, GObject.GObject):
             GLib.source_remove(timer)
             got_contents(dtype, dformat, data)
 
-    def reschedule_incr_data_timer(self) -> None:
-        self.cancel_incr_data_timer()
-        self.incr_data_timer = GLib.timeout_add(1 * 1000, self.incr_data_timeout)
+    def reschedule_incr_data_timer(self, prop: str) -> None:
+        state = self.incr_data[prop]
+        if state.timer:
+            GLib.source_remove(state.timer)
+        state.timer = GLib.timeout_add(1 * 1000, self.incr_data_timeout, prop)
 
-    def cancel_incr_data_timer(self) -> None:
-        idt = self.incr_data_timer
-        if idt:
-            self.incr_data_timer = 0
-            GLib.source_remove(idt)
-
-    def incr_data_timeout(self) -> None:
-        log.warn("Warning: incremental data timeout")
-        self.reset_incr_data()
+    def incr_data_timeout(self, prop: str) -> None:
+        state = self.incr_data.get(prop)
+        if state is None:
+            return
+        state.timer = 0
+        log.warn("Warning: incremental data timeout on %s", prop)
+        self.reset_incr_data(prop)
 
 
 GObject.type_register(ClipboardProxy)

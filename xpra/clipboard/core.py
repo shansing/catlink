@@ -56,6 +56,8 @@ class ClipboardProtocolHelperCore:
         d = typedict(kwargs)
         self.send: Callable = send_packet_cb
         self.progress_cb: Callable = progress_cb
+        self.nontext_callback: Callable | None = d.get("nontext-callback")
+        self.catlink_bridge = d.get("catlink-bridge")
         self.can_send: bool = d.boolget("can-send", True)
         self.can_receive: bool = d.boolget("can-receive", True)
         self.max_clipboard_packet_size: int = d.intget("max-packet-size", MAX_CLIPBOARD_PACKET_SIZE)
@@ -232,12 +234,21 @@ class ClipboardProtocolHelperCore:
             log("_send_clipboard_token_handler(%s, %s)", proxy, repr_ellipsized(packet_data))
         remote = self.local_to_remote(proxy._selection)
         packet: list[Any] = ["clipboard-token", remote]
+        metadata = proxy.get_clipboard_token_metadata()
+        if metadata is None:
+            log.error("get_clipboard_token_metadata() returned None for %s", proxy)
+            metadata = {}
         if packet_data:
             # append 'TARGETS' unchanged:
             packet.append(packet_data[0])
             # if present, the next element is the target data,
             # which we have to convert to wire format:
-            if len(packet_data) >= 2:
+            offer_id = 0
+            if len(packet_data) >= 2 and isinstance(packet_data[1], dict):
+                metadata.update(packet_data[1])
+            elif len(packet_data) >= 2 and isinstance(packet_data[1], int):
+                offer_id = packet_data[1]
+            elif len(packet_data) >= 2:
                 target, dtype, dformat, data = packet_data[1]
                 wire_encoding, wire_data = self._munge_raw_selection_to_wire(target, dtype, dformat, data)
                 if wire_encoding:
@@ -246,6 +257,17 @@ class ClipboardProtocolHelperCore:
                         packet += [target, dtype, dformat, wire_encoding, wire_data]
                         claim = proxy._can_send
                         packet += [claim, CLIPBOARD_GREEDY]
+            if len(packet_data) >= 3 and isinstance(packet_data[2], dict):
+                metadata.update(packet_data[2])
+            elif offer_id == 0 and len(packet_data) >= 3 and isinstance(packet_data[2], int):
+                offer_id = packet_data[2]
+            if offer_id:
+                metadata["offer-id"] = offer_id
+        else:
+            packet.append(())
+        if len(packet) >= 10:
+            packet.append(False)
+        packet.append(metadata)
         log("send_clipboard_token_handler %s to %s", proxy._selection, remote)
         self.send(*packet)
 
@@ -265,6 +287,14 @@ class ClipboardProtocolHelperCore:
             log.warn("ignoring token for disabled clipboard '%s'", name)
             return
         log("process clipboard token selection=%s, local clipboard name=%s, proxy=%s", selection, name, proxy)
+        metadata = packet[-1] if len(packet) >= 4 and isinstance(packet[-1], dict) else {}
+        origin = bytestostr(metadata.get("origin", ""))
+        if not origin:
+            log.debug("clipboard token has no origin metadata; accepting legacy token")
+        if proxy.is_local_clipboard_origin(origin):
+            log.debug("ignoring clipboard token returned to its origin: selection=%s origin=%s", name, origin)
+            return
+        proxy.set_remote_clipboard_origin(origin)
         targets = None
         target_data = None
         if proxy._can_receive:
@@ -291,6 +321,52 @@ class ClipboardProtocolHelperCore:
             # the client may want to be notified of clipboard changes, just like a greedy client
             proxy._greedy_client = bool(packet[9])
         synchronous_client = len(packet) >= 11 and bool(packet[10])
+        offer_id = int(metadata.get("offer-id", 0) or 0)
+        normalized_targets = tuple(bytestostr(x) for x in (targets or ()))
+        bridge_targets = tuple(x for x in normalized_targets
+                               if x.startswith("image/") or x == "text/uri-list" or x.startswith("text/html"))
+        bridge = self.catlink_bridge
+        bridge_proxy = getattr(bridge, "_proxy", None)
+        bridge_active = bool(
+            getattr(bridge, "_active", False)
+            and (bridge_proxy is None or getattr(bridge_proxy, "_selection", name) == name)
+        )
+        if self.nontext_callback and (bridge_targets or bridge_active):
+            try:
+                handled = bool(self.nontext_callback(
+                    "token", proxy, name, normalized_targets, target_data, offer_id, origin,
+                ))
+            except Exception:
+                log.error("non-text clipboard callback failed", exc_info=True)
+                handled = False
+            if handled:
+                proxy.got_token(targets, target_data, False, synchronous_client)
+                if getattr(self.catlink_bridge, "_last_token_duplicate", False):
+                    return
+                requested = ()
+                # Request the representation that matches the richest offer.
+                # Image producers often advertise both a source URI and
+                # image/* targets; asking URI first can return ``none`` and
+                # leave the image bytes unfetched, with no later fallback.
+                images = tuple(x for x in normalized_targets if x.startswith("image/"))
+                if images:
+                    preferred = next((x for x in ("image/png", "image/jpeg") if x in images), images[0])
+                    requested = ((preferred, "text/uri-list")
+                                if "text/uri-list" in normalized_targets else (preferred,))
+                elif "text/uri-list" in normalized_targets:
+                    # Pure file offers use URI to start the Catlink download.
+                    requested = ("text/uri-list",)
+                elif html_targets := tuple(x for x in normalized_targets if x.startswith("text/html")):
+                    preferred = next((x for x in html_targets if x == "text/html"), html_targets[0])
+                    requested = (preferred,)
+                for target in requested:
+                    if not target_data or target not in target_data:
+                        request_remote = getattr(self.catlink_bridge, "request_remote", None)
+                        if request_remote:
+                            request_remote(proxy, target)
+                        else:
+                            self._send_clipboard_request_handler(proxy, name, target)
+                return
         proxy.got_token(targets, target_data, claim, synchronous_client)
 
     def local_targets(self, remote_targets: Iterable[str]) -> Sequence[str]:

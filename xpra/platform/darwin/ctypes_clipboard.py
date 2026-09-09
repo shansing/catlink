@@ -242,6 +242,10 @@ class OSXClipboardProxy(ClipboardProxyCore):
         log("got token, selection=%s, targets=%s, target data=%s, claim=%s, can-receive=%s",
             self._selection, targets, Ellipsizer(target_data), claim, self._can_receive)
         if self._can_receive:
+
+            if self.catlink_bridge and self.catlink_bridge.claim_macos(self, targets or (), target_data):
+                self._have_token = True
+                return
             self.targets = _filter_targets(targets or ())
             self.target_data = target_data or {}
             if targets:
@@ -322,6 +326,11 @@ class OSXClipboardProxy(ClipboardProxyCore):
         log("local_clipboard_changed()")
         if not self._enabled or not self._can_send or self._block_owner_change:
             return
+        if self.catlink_bridge:
+            # Retire pending downloads/providers without clearing the user's
+            # newly written pasteboard. This is a direction change, not echo.
+            self.catlink_bridge.invalidate_native(self, clear=False)
+        self.set_local_clipboard_origin(f"macos:{self.change_count}")
         self.schedule_emit_token()
 
 
@@ -346,6 +355,7 @@ class OSXClipboardProtocolHelper(ClipboardTimeoutHelper):
         proxy = OSXClipboardProxy(selection, self.pasteboard,
                                   self._send_clipboard_request_handler, self._send_clipboard_token_handler)
         proxy.set_direction(self.can_send, self.can_receive)
+        proxy.catlink_bridge = self.catlink_bridge
         return proxy
 
     ############################################################################

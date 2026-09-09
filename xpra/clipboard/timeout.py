@@ -48,6 +48,7 @@ class ClipboardTimeoutHelper(ClipboardProtocolHelperCore):
         self._clipboard_outstanding_requests[request_id] = (timer, selection, target)
         self.progress()
         self.send("clipboard-request", request_id, remote, target)
+        return request_id
 
     def timeout_request(self, request_id: int) -> None:
         try:
@@ -60,8 +61,16 @@ class ClipboardTimeoutHelper(ClipboardProtocolHelperCore):
         log.warn("Warning: remote clipboard request timed out")
         log.warn(" request id %i, selection=%s, target=%s", request_id, selection, target)
         proxy = self._get_proxy(selection)
-        if proxy:
-            proxy.got_contents(target)
+        if self.nontext_callback:
+            try:
+                if self.nontext_callback("contents", proxy, selection,
+                                         (target, "", 0, None), request_id):
+                    return
+            except Exception:
+                log.error("non-text clipboard callback failed", exc_info=True)
+        got_contents = getattr(proxy, "got_contents", None)
+        if got_contents:
+            got_contents(target)
 
     def _clipboard_got_contents(self, request_id: int, dtype: str = "", dformat: int = 0, data=None) -> None:
         try:
@@ -74,12 +83,21 @@ class ClipboardTimeoutHelper(ClipboardProtocolHelperCore):
             self.progress()
         GLib.source_remove(timer)
         proxy = self._get_proxy(selection)
+        if self.nontext_callback:
+            try:
+                if self.nontext_callback("contents", proxy, selection,
+                                         (target, dtype, dformat, data), request_id):
+                    return
+            except Exception:
+                log.error("non-text clipboard callback failed", exc_info=True)
         log("clipboard got contents%s: proxy=%s for selection=%s",
             (request_id, dtype, dformat, Ellipsizer(data)), proxy, selection)
         if data and isinstance(data, memoryview):
             data = bytes(data)
         if proxy:
-            proxy.got_contents(target, dtype, dformat, data)
+            got_contents = getattr(proxy, "got_contents", None)
+            if got_contents:
+                got_contents(target, dtype, dformat, data)
 
     def client_reset(self) -> None:
         super().client_reset()

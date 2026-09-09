@@ -5,5 +5,6 @@
 
 
 def get_backend_module() -> str:
+    # Keep the production sender (including GTK bitmap conversion/clientfs).
+    # Remote downloads are published through its provider, not a new backend.
     return "xpra.gtk.clipboard.GTK_Clipboard"
-    return "xpra.platform.win32.ctypes_clipboard.Win32Clipboard"
