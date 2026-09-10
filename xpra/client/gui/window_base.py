@@ -465,6 +465,9 @@ class ClientWindowBase(ClientWidgetBase):
         if "focused" in metadata:
             self.set_focused(metadata.boolget("focused"))
 
+        if "attention-requested" in metadata:
+            self.set_attention_requested(metadata.boolget("attention-requested"))
+
         if "opaque-region" in metadata:
             self.set_opaque_region(metadata.tupleget("opaque-region"))
 

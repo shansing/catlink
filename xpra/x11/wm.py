@@ -96,6 +96,7 @@ class Wm(GObject.GObject):
 
         self._wm_name = wm_name
         self._ewmh_window = 0
+        self._focus_window = 0
         self.size_constraints = DEFAULT_SIZE_CONSTRAINTS
 
         self._windows: dict[int, Any] = {}
@@ -126,6 +127,7 @@ class Wm(GObject.GObject):
     def _got_wm_selection(self, *_args):
         # Set up the necessary EWMH properties on the root window.
         self._ewmh_window = self._setup_ewmh_window()
+        self._setup_focus_window()
 
         root_w, root_h = X11Window.getGeometry(rxid)[2:4]
         # Start with just one desktop:
@@ -284,7 +286,30 @@ class Wm(GObject.GObject):
     def do_quit(self) -> None:
         self.cleanup()
 
+    def _setup_focus_window(self) -> None:
+        # A mapped InputOnly window can receive focus without drawing anything.
+        self._focus_window = X11Window.CreateWindow(
+            rxid, -1, -1, OR=1, inputoutput=InputOnly, event_mask=constants["PropertyChangeMask"])
+        prop_set(self._focus_window, "WM_NAME", "utf8", "Xpra focus sink")
+        X11Window.MapWindow(self._focus_window)
+
+    def is_internal_window(self, xid: int) -> bool:
+        return xid != 0 and xid in (self._focus_window, self._ewmh_window)
+
+    def reset_x_focus(self) -> None:
+        if self._focus_window:
+            # Use server time, matching the normal window focus path.
+            now = X11Window.get_server_time(self._focus_window)
+            X11Window.XSetInputFocus(self._focus_window, now)
+            root_set("_NET_ACTIVE_WINDOW", "u32", 0)
+            focuslog("reset_x_focus: focus sink=%#x", self._focus_window)
+
     def cleanup(self) -> None:
+        xid = self._focus_window
+        self._focus_window = 0
+        if xid:
+            with xswallow:
+                X11Window.DestroyWindow(xid)
         remove_fallback_receiver("x11-client-message-event", self)
         remove_fallback_receiver("x11-child-map-request-event", self)
         for win in tuple(self._windows.values()):
