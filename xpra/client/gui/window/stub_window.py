@@ -10,6 +10,9 @@ from xpra.util.objects import typedict
 
 class StubWindow:
 
+    def set_attention_requested(self, requested: bool) -> None:
+        """Optional native window attention support."""
+
     def init_window(self, client, metadata: typedict, client_props: typedict) -> None:
         """ setup and initialize the window """
 

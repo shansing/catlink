@@ -345,6 +345,7 @@ def adjust_monitor_refresh_rate(refresh_rate: str, mdef: dict[int, dict]) -> dic
 # this default value is based on 0.15.x clients,
 # later clients should provide the `metadata.supported` capability instead
 DEFAULT_METADATA_SUPPORTED = (
+    "attention-requested",
     "title", "icon-title", "pid", "iconic",
     "size-constraints", "class-instance", "client-machine",
     "transient-for", "window-type",

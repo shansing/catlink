@@ -539,6 +539,8 @@ class SeamlessServer(GObject.GObject, ServerBase):
 
     def _add_new_or_window(self, xid: int) -> None:
         log("_add_new_or_window(%#x)", xid)
+        if self._wm and self._wm.is_internal_window(xid):
+            return
         if self.root_overlay and self.root_overlay == xid:
             windowlog("ignoring root overlay window %#x", self.root_overlay)
             return
@@ -653,6 +655,11 @@ class SeamlessServer(GObject.GObject, ServerBase):
             # this will call clear_keys_pressed() if the server is an InputServer:
             clear_keys_pressed: Callable[[], None] = getattr(self, "clear_keys_pressed", noop)
             clear_keys_pressed()
+            with xlog:
+                if self._wm:
+                    self._wm.reset_x_focus()
+                if had_focus and had_focus.is_managed():
+                    had_focus.update_wm_state("focused", False)
             self._has_focus = 0
 
         if wid == 0:
