@@ -121,6 +121,10 @@ def get_client_connection_class(caps: typedict):
 
         def close(self) -> None:
             log("%s.close()", self)
+            # Upstream c1594a324e51e1e7973c9c06afb3f6c23a3aaf7f:
+            # ClientConnection is cleaned up last, so mark the connection
+            # closed before subsystem teardown starts.
+            self.close_event.set()
             for bc in reversed(CC_BASES):
                 log("%s.cleanup()", bc)
                 try:

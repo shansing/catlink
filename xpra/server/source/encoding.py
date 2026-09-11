@@ -96,11 +96,10 @@ class EncodingsConnection(StubClientConnection):
     def cleanup(self) -> None:
         self.cancel_recalculate_timer()
         if self.cuda_device_context:
-            self.queue_encode((False, self.free_cuda_device_context, ()))
-        # Warning: this mixin must come AFTER the window mixin!
-        # to make sure that it is safe to add the end of queue marker:
-        # (all window sources will have stopped queuing data)
-        self.queue_encode(None)
+            # Upstream c1594a324e51e1e7973c9c06afb3f6c23a3aaf7f:
+            # video encoders may still be using this context until the window
+            # subsystem cleanup has queued and run its encoder cleanup.
+            self.call_in_encode_thread_at_end(self.free_cuda_device_context)
 
     def free_cuda_device_context(self) -> None:
         cdd = self.cuda_device_context
