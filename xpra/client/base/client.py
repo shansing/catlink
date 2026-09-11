@@ -566,6 +566,9 @@ class XpraClientBase(ClientBaseClass):
         netlog("%s", packet)
         info = tuple(str(x) for x in packet[1:])
         reason = info[0]
+        if reason == ConnectionMessage.PROJECTION_SUPERSEDED.value:
+            log.warn("Warning: superseded Catlink projection reconnect rejected: uuid=%s; will not reconnect",
+                     self.catlink_client_uuid or "unknown")
         if not self.connection_established:
             # server never sent hello to us - so disconnect is an error
             # (but we don't know which one - the info message may help)

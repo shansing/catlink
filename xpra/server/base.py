@@ -20,6 +20,7 @@ from xpra.util.str_fn import csv, Ellipsizer
 from xpra.util.env import envbool
 from xpra.net.bytestreams import set_socket_timeout
 from xpra.server import features, ServerExitMode
+from xpra.server.catlink_ownership import CatlinkProjectionOwnership, will_share_with
 from xpra.server.factory import get_server_base_classes
 from xpra.log import Logger
 
@@ -64,6 +65,7 @@ class ServerBase(ServerBaseClass):
         self.ui_driver = None
         self.sharing: bool | None = None
         self.lock: bool | None = None
+        self.catlink_projection_ownership = CatlinkProjectionOwnership()
         self.idle_timeout: int = 0
         self.client_shutdown: bool = CLIENT_CAN_SHUTDOWN
         self.dotxpra = None
@@ -199,14 +201,30 @@ class ServerBase(ServerBaseClass):
     # handle new connections:
     # noinspection PySimplifyBooleanCheck
     def handle_sharing(self, proto, ui_client: bool = True, share: bool = False,
-                       uuid="") -> tuple[bool, int]:
+                       uuid="", catlink_client_uuid="") -> tuple[bool, int]:
         share_count = 0
         disconnected = 0
         existing_sources = set(ss for p, ss in self._server_sources.items() if p != proto)
         is_existing_client = uuid and any(ss.uuid == uuid for ss in existing_sources)
-        authlog("handle_sharing%s lock=%s, sharing=%s, existing sources=%s, is existing client=%s",
-                (proto, ui_client, share, uuid),
-                self.lock, self.sharing, existing_sources, is_existing_client)
+        will_share = any(
+            ui_client and ss.ui_client and will_share_with(
+                self.sharing, share, ss.share, bool(uuid and ss.uuid == uuid),
+            )
+            for ss in existing_sources
+        )
+        catlink_fencing = ui_client and not will_share
+        authlog("handle_sharing%s lock=%s, sharing=%s, existing sources=%s, is existing client=%s, "
+                "catlink owner=%s, retired=%s, fencing=%s",
+                (proto, ui_client, share, uuid, catlink_client_uuid),
+                self.lock, self.sharing, existing_sources, is_existing_client,
+                self.catlink_projection_ownership.owner_uuid,
+                self.catlink_projection_ownership.retired_uuids, catlink_fencing)
+        if catlink_fencing and self.catlink_projection_ownership.is_retired(catlink_client_uuid):
+            authlog.warn("Warning: rejecting superseded Catlink projection: uuid=%s, current-owner=%s",
+                         catlink_client_uuid, self.catlink_projection_ownership.owner_uuid)
+            self.disconnect_client(proto, ConnectionMessage.PROJECTION_SUPERSEDED,
+                                   "a newer projection owns this session")
+            return False, 0
         # if other clients are connected, verify we can steal or share:
         if existing_sources and not is_existing_client:
             if self.sharing is True or (self.sharing is None and share and all(ss.share for ss in existing_sources)):
@@ -250,6 +268,11 @@ class ServerBase(ServerBaseClass):
         if disconnected > 0 and share_count == 0 and self.exit_with_client:
             self.disconnect_client(proto, ConnectionMessage.SERVER_SHUTDOWN, "last client has exited")
             accepted = False
+        if accepted and catlink_fencing and share_count == 0 and catlink_client_uuid:
+            previous_owner = self.catlink_projection_ownership.accept(catlink_client_uuid)
+            if previous_owner:
+                authlog.info("Catlink projection ownership changed from %s to %s",
+                             previous_owner, catlink_client_uuid)
         return accepted, share_count
 
     def hello_oked(self, proto, c: typedict, auth_caps: dict) -> None:
@@ -273,7 +296,8 @@ class ServerBase(ServerBaseClass):
         ui_client = c.boolget("ui_client", True)
         share = c.boolget("share")
         uuid = c.strget("uuid")
-        accepted, share_count = self.handle_sharing(proto, ui_client, share, uuid)
+        catlink_client_uuid = c.strget("catlink-client-uuid")
+        accepted, share_count = self.handle_sharing(proto, ui_client, share, uuid, catlink_client_uuid)
         if not accepted:
             return
 
