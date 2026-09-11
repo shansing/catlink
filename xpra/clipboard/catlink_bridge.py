@@ -62,7 +62,9 @@ def _local_file_target(target, uris):
         from xpra.clipboard.win32_formats import encode_shell_id_list
         return encode_shell_id_list(uris)
     if target == "x-special/gnome-copied-files":
-        return b"copy\n" + uris
+        # Unlike text/uri-list, GNOME's private format rejects an empty final
+        # URI record, so normalize separators and omit the trailing newline.
+        return b"copy\n" + b"\n".join(uris.splitlines())
     if target == "text/x-moz-url":
         first = uris.decode("utf-8").splitlines()[0] if uris else ""
         title = os.path.basename(unquote(urlsplit(first).path))
