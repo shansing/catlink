@@ -382,11 +382,18 @@ class WindowVideoSource(WindowSource):
             We have to do this from the encode thread to be safe.
             (the encoder and csc module may be in use by that thread)
         """
-        self.cancel_video_encoder_flush()
+        # Keep this local compatibility wrapper while using the single cleanup
+        # path introduced by upstream d1ca74f49d16ffb37e3f5a7b462967a1cc3fbc57.
         self.video_context_clean()
 
-    def video_context_clean(self) -> None:
-        """ Calls clean() from the encode thread """
+    def video_context_clean(self, encode_thread: bool = False) -> None:
+        """Detach the video context and clean it from the encode thread.
+
+        Based on upstream commits d1ca74f49d16ffb37e3f5a7b462967a1cc3fbc57
+        and aae59ecc0792b50eed07ef43d730d51e683e9a84 (#5019).
+        """
+        self.cancel_video_encoder_flush()
+        self.cancel_video_encoder_timer()
         csce = self._csc_encoder
         ve = self._video_encoder
         if csce or ve:
@@ -395,11 +402,26 @@ class WindowVideoSource(WindowSource):
             self._csc_encoder = None
             self._video_encoder = None
 
-            def clean() -> None:
-                if DEBUG_VIDEO_CLEAN:
-                    log.warn("video_context_clean() done")
+        def clean() -> None:
+            if DEBUG_VIDEO_CLEAN:
+                log.warn("video_context_clean() done")
+            # An encode operation may have scheduled a flush after the caller
+            # cancelled the timer but before this cleanup callback ran.
+            self.cancel_video_encoder_flush()
+            if csce:
                 self.csc_clean(csce)
+            if ve:
                 self.ve_clean(ve)
+            # An encoder may have been published while the first snapshot was
+            # being cleaned. Re-check from the encode thread.
+            if not encode_thread:
+                self.video_context_clean(True)
+
+        if encode_thread:
+            clean()
+        else:
+            # Upstream aae59ecc0792b50eed07ef43d730d51e683e9a84:
+            # queue a cleanup even when the initial snapshot is empty.
             self.call_in_encode_thread(False, clean)
 
     # noinspection PyMethodMayBeStatic
@@ -750,6 +772,9 @@ class WindowVideoSource(WindowSource):
         self.stop_gstreamer_pipeline()
 
     def cancel_damage(self, limit: int = 0) -> None:
+        # Upstream caef7fb35c7fb3c7e7f0a0fc4213c66e253544da:
+        # mark sequences cancelled before freeing queued images.
+        super().cancel_damage(limit)
         self.cancel_encode_from_queue()
         self.free_encode_queue_images()
         vsr = self.video_subregion
@@ -757,7 +782,6 @@ class WindowVideoSource(WindowSource):
             vsr.cancel_refresh_timer()
         self.free_scroll_data()
         self.last_scroll_time = 0
-        super().cancel_damage(limit)
         self.cancel_gstreamer_timer()
         self.stop_gstreamer_pipeline()
         # we must clean the video encoder to ensure
@@ -1089,7 +1113,10 @@ class WindowVideoSource(WindowSource):
                 self.wid, sequence, ew, eh, encoding, 1000*(now-damage_time), 1000*(now-rgb_request_time), av_delay)
             item = (ew, eh, damage_time, now, eimage, encoding, sequence, eoptions, flush)
             if av_delay <= 0:
-                self.call_in_encode_thread(True, self.make_data_packet_cb, *item)
+                # Upstream 7176e271d2c52f6d05090dbaf8dfdd21f72a37fb:
+                # once the encode thread owns the image, it must run the
+                # callback during shutdown so the image is released.
+                self.call_in_encode_thread(False, self.make_data_packet_cb, *item)
             else:
                 self.encode_queue.append(item)
                 self.schedule_encode_from_queue(av_delay)
@@ -1174,7 +1201,9 @@ class WindowVideoSource(WindowSource):
     def timer_encode_from_queue(self) -> None:
         self.encode_from_queue_timer = 0
         self.encode_from_queue_due = 0
-        self.call_in_encode_thread(True, self.encode_from_queue)
+        # Upstream 56a82f9e9b1a37ab3d01be90fd74c59d05a9b68e:
+        # the UI thread is the sole owner of encode_queue.
+        self.encode_from_queue()
 
     def encode_from_queue(self) -> None:
         # note: we use a queue here to ensure we preserve the order
@@ -1195,35 +1224,30 @@ class WindowVideoSource(WindowSource):
         now = monotonic()
         still_due = []
         remove = []
-        index = 0
-        item = None
-        sequence = None
         done_packet = False     # only one packet per iteration
-        try:
-            for index, item in enumerate(eq):
-                # item = (w, h, damage_time, now, image, coding, sequence, options, flush)
-                sequence = item[6]
-                if self.is_cancelled(sequence):
-                    free_image_wrapper(item[4])
-                    remove.append(index)
-                    continue
-                ts = item[3]
-                due = ts + av_delay
-                if due <= now and not done_packet:
-                    # found an item which is due
-                    remove.append(index)
-                    avsynclog("encode_from_queue: processing item %s/%s (overdue by %ims)",
-                              index+1, len(self.encode_queue), int(1000*(now-due)))
-                    self.make_data_packet_cb(*item)
-                    done_packet = True
-                else:
-                    # we only process one item per call (see "done_packet")
-                    # and just keep track of extra ones:
-                    still_due.append(int(1000*(due-now)))
-        except RuntimeError:
-            if not self.is_cancelled(sequence):
-                avsynclog.error("error processing encode queue at index %i", index)
-                avsynclog.error("item=%s", item, exc_info=True)
+        # Upstream 56a82f9e9b1a37ab3d01be90fd74c59d05a9b68e:
+        # this method runs in the UI thread; ownership of the selected image
+        # is transferred to the encode thread.
+        for index, item in enumerate(eq):
+            # item = (w, h, damage_time, now, image, coding, sequence, options, flush)
+            sequence = item[6]
+            if self.is_cancelled(sequence):
+                free_image_wrapper(item[4])
+                remove.append(index)
+                continue
+            ts = item[3]
+            due = ts + av_delay
+            if due <= now and not done_packet:
+                # found an item which is due
+                remove.append(index)
+                avsynclog("encode_from_queue: processing item %s/%s (overdue by %ims)",
+                          index+1, len(self.encode_queue), int(1000*(now-due)))
+                self.call_in_encode_thread(False, self.make_data_packet_cb, *item)
+                done_packet = True
+            else:
+                # we only process one item per call (see "done_packet")
+                # and just keep track of extra ones:
+                still_due.append(int(1000*(due-now)))
         # remove the items we've dealt with:
         # (in reverse order since we pop them from the queue)
         if remove:
@@ -1236,7 +1260,7 @@ class WindowVideoSource(WindowSource):
         first_due = max(ENCODE_QUEUE_MIN_GAP, min(still_due))
         avsynclog("encode_from_queue: first due in %ims, due list=%s (av-sync delay=%i, actual=%i, for wid=%#x)",
                   first_due, still_due, self.av_sync_delay, av_delay, self.wid)
-        GLib.idle_add(self.schedule_encode_from_queue, first_due)
+        self.schedule_encode_from_queue(first_due)
 
     def update_encoding_video_subregion(self) -> None:
         """
@@ -2054,7 +2078,6 @@ class WindowVideoSource(WindowSource):
             if encoder_scaling != (1, 1) and not encoder_spec.can_scale:
                 videolog("scaling is now enabled, so skipping %s", encoder_spec)
                 return False
-        self._csc_encoder = csce
         enc_start = monotonic()
         # FIXME: filter dst_formats to only contain formats the encoder knows about?
         dst_formats = self.full_csc_modes.strtupleget(encoding)
@@ -2081,6 +2104,9 @@ class WindowVideoSource(WindowSource):
         self.max_h = max_h
         enc_end = monotonic()
         self.start_video_frame = 0
+        # Upstream 06f92fec66711e2325dde5ff62390aee37437bd0 (#5016):
+        # publish the CSC and encoder only after both are fully initialized.
+        self._csc_encoder = csce
         self._video_encoder = ve
         videolog("setup_pipeline: csc=%s, video encoder=%s, info: %s, setup took %.2fms",
                  csce, ve, ve.get_info(), (enc_end - enc_start) * 1000)
@@ -2597,7 +2623,7 @@ class WindowVideoSource(WindowSource):
         if not data:
             if ve.is_closed():
                 videolog("video encoder is closed: %s", ve)
-                self.video_context_clean()
+                self.video_context_clean(True)
                 return self.video_fallback(image, options, info=f"encoder {ve.get_type()} is closed")
             videolog.error("Error: %s video data is missing", encoding)
             return ()
@@ -2628,7 +2654,9 @@ class WindowVideoSource(WindowSource):
         # but we want to run from the encode thread to access the encoder:
         self.b_frame_flush_timer = 0
         if self.b_frame_flush_data:
-            self.call_in_encode_thread(True, self.do_flush_video_encoder)
+            # The callback owns the encoder reference captured in
+            # b_frame_flush_data and must run during connection teardown.
+            self.call_in_encode_thread(False, self.do_flush_video_encoder)
 
     def do_flush_video_encoder(self) -> None:
         flush_data = self.b_frame_flush_data
@@ -2636,7 +2664,19 @@ class WindowVideoSource(WindowSource):
         if not flush_data:
             return
         ve, csc, frame, x, y, scaled_size = flush_data
-        if self._video_encoder != ve or ve.is_closed():
+        if self._video_encoder != ve:
+            # The flush belongs to an encoder which has already been
+            # superseded. Do not retain its reference in the pending flush
+            # state.
+            self.cancel_video_encoder_flush()
+            return
+        if ve.is_closed():
+            # The upstream closed-encoder flush cleanup (aae59ecc0792b50eed07ef43d730d51e683e9a84)
+            # handles an encoder which closes during flush, but its early
+            # return leaves a pre-closed encoder's flush state behind.
+            # Clear that state and clean the current context on the encode
+            # thread. This is an additional fix for the uncovered case.
+            self.video_context_clean(True)
             return
         if frame == 0 and ve.get_type() == "x264":
             # x264 has problems if we try to re-use a context after flushing the first IDR frame
@@ -2650,38 +2690,45 @@ class WindowVideoSource(WindowSource):
         h = ve.get_height()
         encoding = ve.get_encoding()
         v = ve.flush(frame)
-        if ve.is_closed():
+        closed = ve.is_closed()
+        if closed:
             videolog("do_flush_video_encoder encoder %s is closed following the flush", ve)
-            self.cleanup_codecs()
-        if not v:
-            videolog("do_flush_video_encoder: %s flush=%s", flush_data, v)
-            return
-        data, client_options = v
-        if not data:
-            videolog("do_flush_video_encoder: %s no data: %s", flush_data, v)
-            return
-        if self.video_stream_file:
-            self.video_stream_file.write(data)
-            self.video_stream_file.flush()
-        if frame < self.start_video_frame:
-            client_options["paint"] = False
-        if scaled_size:
-            client_options["scaled_size"] = scaled_size
-        client_options["flush-encoder"] = True
-        videolog("do_flush_video_encoder %s : (%s %s bytes, %s)",
-                 flush_data, len(data or ()), type(data), client_options)
-        now = monotonic()
-        # warning: 'options' will be missing the "window-size",
-        # so we may end up not honouring gravity during window resizing:
-        options = typedict()
-        packet = self.make_draw_packet(x, y, w, h, encoding, Compressed(encoding, data), 0,
-                                       client_options, options)
-        self.queue_damage_packet(packet, now, now)
-        # check for more delayed frames since we want to support multiple b-frames:
-        if not self.b_frame_flush_timer and client_options.get("delayed", 0) > 0:
-            self.schedule_video_encoder_flush(ve, csc, frame, x, y, scaled_size)
-        else:
-            self.schedule_video_encoder_timer()
+        try:
+            if not v:
+                videolog("do_flush_video_encoder: %s flush=%s", flush_data, v)
+                return
+            data, client_options = v
+            if not data:
+                videolog("do_flush_video_encoder: %s no data: %s", flush_data, v)
+                return
+            if self.video_stream_file:
+                self.video_stream_file.write(data)
+                self.video_stream_file.flush()
+            if frame < self.start_video_frame:
+                client_options["paint"] = False
+            if scaled_size:
+                client_options["scaled_size"] = scaled_size
+            client_options["flush-encoder"] = True
+            videolog("do_flush_video_encoder %s : (%s %s bytes, %s)",
+                     flush_data, len(data or ()), type(data), client_options)
+            now = monotonic()
+            # warning: 'options' will be missing the "window-size",
+            # so we may end up not honouring gravity during window resizing:
+            options = typedict()
+            packet = self.make_draw_packet(x, y, w, h, encoding, Compressed(encoding, data), 0,
+                                           client_options, options)
+            self.queue_damage_packet(packet, now, now)
+            if not closed:
+                # check for more delayed frames since we want to support multiple b-frames:
+                if not self.b_frame_flush_timer and client_options.get("delayed", 0) > 0:
+                    self.schedule_video_encoder_flush(ve, csc, frame, x, y, scaled_size)
+                else:
+                    self.schedule_video_encoder_timer()
+        finally:
+            if closed:
+                # Upstream aae59ecc0792b50eed07ef43d730d51e683e9a84:
+                # clean a closed encoder synchronously from the encode thread.
+                self.video_context_clean(True)
 
     def cancel_video_encoder_timer(self) -> None:
         vet: int = self.video_encoder_timer

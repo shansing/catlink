@@ -2175,7 +2175,9 @@ class WindowSource(WindowIconSource):
 
         now = monotonic()
         item = (w, h, damage_time, now, image, coding, sequence, eoptions, flush)
-        self.call_in_encode_thread(True, self.make_data_packet_cb, *item)
+        # Upstream 7176e271d2c52f6d05090dbaf8dfdd21f72a37fb:
+        # the encode thread owns the image and must release it while closing.
+        self.call_in_encode_thread(False, self.make_data_packet_cb, *item)
         log("process_damage_region: wid=%#x, sequence=%i, adding pixel data to encode queue (%4ix%-4i - %5s), elapsed time: %3.1f ms, request time: %3.1f ms",
             self.wid, sequence, w, h, coding, 1000*(now-damage_time), 1000*(now-rgb_request_time))
         return True

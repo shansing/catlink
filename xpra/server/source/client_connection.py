@@ -9,7 +9,7 @@ import sys
 from typing import Any, TypeAlias
 from collections.abc import Callable, Sequence
 from time import sleep, monotonic
-from threading import Event
+from threading import Event, Lock
 from collections import deque
 from queue import SimpleQueue
 
@@ -74,6 +74,13 @@ class ClientConnection(StubClientConnection):
         # the functions should add the packets they generate to the 'packet_queue'
         self.encode_work_queue: SimpleQueue[None | tuple[bool, Callable, Sequence[Any]]] = SimpleQueue()
         self.encode_thread = None
+        # Upstream 7ea8cdc6c49306e4322e01eaf5bcb989d1e5b873:
+        # starting the encode thread must be atomic.
+        self.encode_thread_lock = Lock()
+        # Upstream c1594a324e51e1e7973c9c06afb3f6c23a3aaf7f:
+        # defer resource cleanup that must run after every subsystem has
+        # queued its encode-thread work.
+        self.encode_at_end: list[tuple[Callable, Sequence[Any]]] = []
         self.ordinary_packets: list[tuple[Packet, bool, bool]] = []
 
         self.suspended = False
@@ -117,8 +124,9 @@ class ClientConnection(StubClientConnection):
         return self.close_event.is_set()
 
     def cleanup(self) -> None:
-        log("%s.close()", self)
+        log("%s.cleanup()", self)
         self.close_event.set()
+        self.stop_encode_thread()
         self.protocol = None
         self.statistics.reset(0)
 
@@ -168,9 +176,14 @@ class ClientConnection(StubClientConnection):
         # holds functions to call to compress data (pixels, clipboard)
         # items placed in this queue are picked off by the "encode" thread,
         # the functions should add the packets they generate to the 'packet_queue'
-        self.queue_encode = self.encode_work_queue.put
-        self.queue_encode(item)
-        self.encode_thread = start_thread(self.encode_loop, "encode")
+        # Upstream 7ea8cdc6c49306e4322e01eaf5bcb989d1e5b873:
+        # only one encode thread may consume this queue.
+        put = self.encode_work_queue.put
+        with self.encode_thread_lock:
+            if not self.encode_thread:
+                self.encode_thread = start_thread(self.encode_loop, "encode")
+                self.queue_encode = put
+            put(item)
 
     def encode_queue_size(self) -> int:
         return self.encode_work_queue.qsize()
@@ -182,6 +195,22 @@ class ClientConnection(StubClientConnection):
         """
         self.statistics.compression_work_qsizes.append((monotonic(), self.encode_queue_size()))
         self.queue_encode((optional, fn, args))
+
+    def call_in_encode_thread_at_end(self, fn: Callable, *args) -> None:
+        """
+            Queue a function to be called from the encode thread during close,
+            after every subsystem has queued its own encode-thread cleanup.
+        """
+        self.encode_at_end.append((fn, args))
+
+    def stop_encode_thread(self) -> None:
+        # ClientConnection is always first in CC_BASES, so reversed cleanup
+        # calls it last. Only now is it safe to post the end-of-queue marker.
+        at_end = self.encode_at_end
+        self.encode_at_end = []
+        for fn, args in at_end:
+            self.queue_encode((False, fn, args))
+        self.queue_encode(None)
 
     def queue_packet(self, packet: Packet, wid=0, pixels=0,
                      wait_for_more=False) -> None:
