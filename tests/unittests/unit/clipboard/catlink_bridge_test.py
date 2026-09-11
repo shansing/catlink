@@ -176,8 +176,14 @@ class CatlinkBridgeBinaryFrameTest(unittest.TestCase):
         self.assertFalse(_same_source_offer(0, 0))
 
     def test_file_aliases_use_local_paths_and_correct_encoding(self):
-        uris = b"file:///tmp/local%20image.tiff\n"
-        self.assertEqual(_local_file_target("x-special/gnome-copied-files", uris), b"copy\n" + uris)
+        cases = (
+            (b"file:///tmp/local%20image.tiff\n", b"copy\nfile:///tmp/local%20image.tiff"),
+            (b"file:///tmp/one\r\nfile:///tmp/two\r\n", b"copy\nfile:///tmp/one\nfile:///tmp/two"),
+        )
+        for uris, expected in cases:
+            with self.subTest(uris=uris):
+                self.assertEqual(_local_file_target("x-special/gnome-copied-files", uris), expected)
+        uris = cases[0][0]
         self.assertEqual(_local_file_target("text/x-moz-url", uris).decode("utf-16le"),
                          "file:///tmp/local%20image.tiff\r\nlocal image.tiff")
 
