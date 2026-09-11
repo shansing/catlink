@@ -129,6 +129,7 @@ class ConnectionMessage(StrEnum):
     NEW_CLIENT              = "new client"
     IDLE_TIMEOUT            = "idle timeout"
     SESSION_BUSY            = "session busy"
+    PROJECTION_SUPERSEDED   = "projection superseded"
     # client telling the server:
     CLIENT_EXIT             = "client exit"
 
