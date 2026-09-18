@@ -12,13 +12,18 @@ from xpra.client.gtk3.window.stub_window import GtkStubWindow
 from xpra.os_util import gi_import, WIN32, POSIX
 from xpra.util.objects import typedict
 from xpra.util.str_fn import csv
+from xpra.util.thread import start_thread
 from xpra.log import Logger
 
 Gtk = gi_import("Gtk")
 Gdk = gi_import("Gdk")
 Gio = gi_import("Gio")
+GLib = gi_import("GLib")
 
 log = Logger("window", "events", "dragndrop")
+
+RIM_DROP_CONNECT_TIMEOUT = 3
+RIM_DROP_READ_TIMEOUT = 15
 
 
 def xid(w) -> int:
@@ -149,32 +154,35 @@ class DragNDropWindow(GtkStubWindow):
         RIM_SERVER=os.getenv("RIM_SERVER","")
         if RIM_SERVER != "":
             target_xid = self._metadata.get("xid")
-            success = False
 
             # force update pointer position
             self._file_handler.poll_pointer()
 
-            import requests
-            try:
-                resp = requests.get(
-                    url =f"{RIM_SERVER}/dnd/drop",
-                    verify = False,
-                    timeout = 5,
-                    params = {
-                        "file_path": filelist,
-                        "client_id": os.getenv("LZC_CLIENT_ID"),
-                        "win": target_xid,
-                    })
-                success = resp.ok
-                if success:
-                    log.info("DND DROP RESULT %s win:%s", resp, target_xid)
-                else:
-                    log.warn(f"Warning: DND DROP failed {resp} win:{target_xid}")
-            except Exception as e:
-                log.warn("Warning: DND DROP request failed:")
-                log.warn(" %s", e)
-            finally:
-                finish_drag(success)
+            def request_drop() -> None:
+                request_success = False
+                try:
+                    import requests
+                    with requests.get(
+                            url=f"{RIM_SERVER}/dnd/drop",
+                            verify=False,
+                            timeout=(RIM_DROP_CONNECT_TIMEOUT, RIM_DROP_READ_TIMEOUT),
+                            params={
+                                "file_path": filelist,
+                                "client_id": os.getenv("LZC_CLIENT_ID"),
+                                "win": target_xid,
+                            }) as resp:
+                        request_success = resp.ok
+                        if request_success:
+                            log.info("DND DROP RESULT %s win:%s", resp, target_xid)
+                        else:
+                            log.warn("Warning: DND DROP failed %s win:%s", resp, target_xid)
+                except Exception as e:
+                    log.warn("Warning: DND DROP request failed:")
+                    log.warn(" %s", e)
+                finally:
+                    GLib.idle_add(finish_drag, request_success)
+
+            start_thread(request_drop, "RIM drag-and-drop", daemon=True)
         else:
             for filename in filelist:
                 self.drag_process_file(filename, file_done)
