@@ -80,6 +80,9 @@ FRAME_OVERHEAD = envint("XPRA_FRAME_OVERHEAD", 1)
 
 HAS_ALPHA = envbool("XPRA_ALPHA", True)
 BROWSER_ALPHA_FIX = envbool("XPRA_BROWSER_ALPHA_FIX", True)
+CATLINK_VIDEO_ALPHA_FIX = envbool("CATLINK_VIDEO_ALPHA_FIX", False)
+if CATLINK_VIDEO_ALPHA_FIX:
+    log.info("Catlink video alpha fix enabled for eligible NORMAL video windows")
 STRICT_MODE = envbool("XPRA_ENCODING_STRICT_MODE", False)
 MAX_QUALITY = envint("XPRA_ENCODING_MAX_QUALITY", 100)
 MAX_SPEED = envint("XPRA_ENCODING_MAX_SPEED", 100)
@@ -362,6 +365,23 @@ class WindowSource(WindowIconSource):
             if self.content_type.find("browser") >= 0 and "NORMAL" in self.window_type and ww >= 200 and wh >= 200:
                 self.has_alpha = False
 
+        if self.has_alpha and CATLINK_VIDEO_ALPHA_FIX and self.content_type.find("video") >= 0:
+            transient_for = self.window.get("transient-for")
+            reason = self.get_catlink_video_alpha_fix_skip_reason(transient_for)
+            if reason:
+                log.info(
+                    "Catlink video alpha fix preserving alpha for window %#x: "
+                    "reason=%s, content-type=%s, type=%s, size=%ix%i",
+                    self.wid, reason, self.content_type, csv(self.window_type), ww, wh,
+                )
+            else:
+                self.has_alpha = False
+                log.info(
+                    "Catlink video alpha fix disabled alpha for window %#x: "
+                    "content-type=%s, type=%s, size=%ix%i",
+                    self.wid, self.content_type, csv(self.window_type), ww, wh,
+                )
+
         # will be overridden by update_quality() and update_speed() called from update_encoding_selection()
         # just here for clarity:
         nobwl = (self.bandwidth_limit or 0) <= 0
@@ -388,6 +408,22 @@ class WindowSource(WindowIconSource):
 
     def __repr__(self) -> str:
         return f"WindowSource({self.wid:#x} : {self.window_dimensions})"
+
+    def get_catlink_video_alpha_fix_skip_reason(self, transient_for) -> str:
+        if self.is_OR:
+            return "override-redirect"
+        if self.is_tray:
+            return "tray"
+        if "NORMAL" not in self.window_type:
+            return "non-normal"
+        if transient_for:
+            return "transient"
+        if self.has_shape:
+            return "shaped"
+        ww, wh = self.window_dimensions
+        if ww < 200 or wh < 200:
+            return "too-small"
+        return ""
 
     def ui_thread_check(self) -> None:
         if not UI_THREAD_CHECK:
