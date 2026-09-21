@@ -24,7 +24,7 @@ from xpra.common import (
     MOVERESIZE_DIRECTION_STRING, SOURCE_INDICATION_STRING, BACKWARDS_COMPATIBLE,
 )
 from xpra.net.common import PacketElement
-from xpra.client.gui.window_base import ClientWindowBase
+from xpra.client.gui.window_base import ClientWindowBase, NOT_REQUESTED
 from xpra.client.gtk3.window.common import (
     use_x11_bindings, is_awt, is_popup, mask_buttons,
     WINDOW_NAME_TO_HINT, ALL_WINDOW_TYPES, BUTTON_MASK,
@@ -64,9 +64,6 @@ OSX_FLOATING_SHADOW_WINDOW_TYPES = {
 }
 
 CATLINK_WINDOW_DRAG_REMEMBERED_EVENT_MAX_AGE = envfloat("CATLINK_WINDOW_DRAG_REMEMBERED_EVENT_MAX_AGE", 3.0)
-CATLINK_CLAMP_WINDOW_TO_VISIBLE_AREA = envbool("CATLINK_CLAMP_WINDOW_TO_VISIBLE_AREA", True)
-CATLINK_WINDOW_VISIBLE_AREA_MARGIN = envint("CATLINK_WINDOW_VISIBLE_AREA_MARGIN", 0)
-
 HAS_X11_BINDINGS = False
 
 prop_get = None
@@ -323,24 +320,13 @@ class GTKClientWindowBase(ClientWindowBase, Gtk.Window):
         # try to honour the initial position
         geomlog("setup_window() position=%s, set_initial_position=%s, OR=%s, decorated=%s",
                 self._pos, self._set_initial_position, self.is_OR(), self.get_decorated())
-
-
         # honour "set-initial-position"
         if self._set_initial_position or self.is_OR():
-            self.set_initial_position(self._requested_position or self._pos)
+            pos = self._requested_position
+            if pos == NOT_REQUESTED:
+                pos = self._pos
+            self.set_initial_position(pos)
         self.set_default_size(*self._size)
-
-        if hasattr(self, '_requested_position') and self._requested_position:
-            def _move():
-                adjusted = self.adjusted_position(*self._requested_position)
-                scaled = self.sp(*adjusted)
-                x, y = self.clamp_initial_position_to_visible_area(*scaled, *self._size)
-                self.move(x, y)
-
-            if self.get_realized():
-                _move()
-            else:
-                self.when_realized("setup-position", _move)
 
     def set_initial_position(self, pos) -> None:
         x, y = self.adjusted_position(*pos)
@@ -472,73 +458,6 @@ class GTKClientWindowBase(ClientWindowBase, Gtk.Window):
                     geomlog("adjusted_position(%i, %i)=%i, %i", ox, oy, x, y)
                     return x, y
         return ox, oy
-
-    def clamp_initial_position_to_visible_area(self, x: int, y: int, w: int, h: int) -> tuple[int, int]:
-        if self.is_OR():
-            return x, y
-        ss = getattr(self._client, "_current_screen_sizes", None)
-        if ss and len(ss) == 1:
-            clamped = self.clamp_to_visible_monitors(x, y, w, h)
-            if clamped is not None:
-                return clamped
-        try:
-            screen_w, screen_h = self._client.get_root_size()
-        except (AttributeError, TypeError, ValueError):
-            return x, y
-        margin = max(0, CATLINK_WINDOW_VISIBLE_AREA_MARGIN)
-        if screen_w <= margin * 2 or screen_h <= margin * 2:
-            return x, y
-
-        def clamp_axis(pos: int, size: int, limit: int) -> int:
-            start = margin
-            end = limit - margin
-            if size >= end - start:
-                return start
-            return max(start, min(pos, end - size))
-
-        nx = clamp_axis(x, max(1, w), screen_w)
-        ny = clamp_axis(y, max(1, h), screen_h)
-        return nx, ny
-
-    def clamp_to_visible_monitors(self, x: int, y: int, w: int, h: int) -> tuple[int, int] | None:
-        ss = getattr(self._client, "_current_screen_sizes", None)
-        if not ss or len(ss) != 1:
-            return None
-        monitors = ss[0][5]
-        if not monitors:
-            return None
-        try:
-            from xpra.util.rectangle import rectangle
-        except ImportError:
-            return None
-        wrect = rectangle(x, y, w, h)
-        rects = [wrect]
-        pixels_in_monitor: dict[int, int] = {}
-        for i, monitor in enumerate(monitors):
-            _plug_name, mx, my, mw, mh = monitor[:5]
-            new_rects = []
-            for rect in rects:
-                new_rects += rect.subtract(mx, my, mw, mh)
-            rects = new_rects
-            if not rects:
-                return x, y
-            inter = wrect.intersection(mx, my, mw, mh)
-            if inter:
-                pixels_in_monitor[inter.width * inter.height] = i
-        if not pixels_in_monitor:
-            i = 0
-        else:
-            i = pixels_in_monitor[max(pixels_in_monitor.keys())]
-        _, mx, my, mw, mh = monitors[i][:5]
-        if w >= mw:
-            nx = mx
-        else:
-            nx = max(mx, min(x, mx + mw - w))
-        if h >= mh:
-            ny = my
-        else:
-            ny = max(my, min(y, my + mh - h))
-        return nx, ny
 
     def calculate_window_offset(self, wx: int, wy: int, ww: int, wh: int) -> tuple[int, int] | None:
         ss = self._client._current_screen_sizes
