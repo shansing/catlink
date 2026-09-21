@@ -42,6 +42,7 @@ OVERRIDE_GRAVITY = envint("XPRA_OVERRIDE_GRAVITY", 0)
 FORCE_FLUSH = envbool("XPRA_FORCE_FLUSH", False)
 
 SHOW_SPINNER_WINDOW_TYPES = set(os.environ.get("XPRA_SHOW_SPINNER_WINDOW_TYPES", "DIALOG,NORMAL,SPLASH").split(","))
+NOT_REQUESTED = -2**31, -2**31
 
 
 def is_wm_property(name: str) -> bool:
@@ -84,7 +85,7 @@ class ClientWindowBase(ClientWidgetBase):
         self._yscale = client.yscale
         self._client_properties = client_properties
         self._set_initial_position = metadata.boolget("set-initial-position", False)
-        self._requested_position = metadata.intpair("requested-position", None)
+        self._requested_position = metadata.intpair("requested-position", NOT_REQUESTED)
         self.size_constraints = typedict()
         self.geometry_hints = typedict()
         self.content_type = ""
