@@ -17,6 +17,18 @@ from xpra.scripts.parsing import (
 
 class TestParsing(unittest.TestCase):
 
+    def test_catlink_clipboard_shortcut_tap_option(self):
+        from xpra.scripts.config import make_defaults_struct
+        from xpra.scripts.parsing import parse_command_line
+
+        defaults = make_defaults_struct()
+        for value, expected in (("yes", True), ("no", False)):
+            with self.subTest(value=value):
+                options, _ = parse_command_line(
+                    [f"--catlink-clipboard-shortcut-tap={value}"], defaults,
+                )
+                self.assertIs(options.catlink_clipboard_shortcut_tap, expected)
+
     def test_ssh_parsing(self):
         assert parse_ssh_option("auto")[0] in ("paramiko", "ssh")
         assert parse_ssh_option("ssh") == ["ssh"]

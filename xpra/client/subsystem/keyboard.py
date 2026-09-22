@@ -45,8 +45,10 @@ class KeyboardClient(StubClientMixin):
         self.key_repeat_interval = -1
         self.server_keyboard: bool = True
         self.kh_warning: bool = False
+        self.catlink_clipboard_shortcut_tap: bool = False
 
     def init_ui(self, opts) -> None:
+        self.catlink_clipboard_shortcut_tap = bool(getattr(opts, "catlink_clipboard_shortcut_tap", False))
         send_keyboard = noop
         if not self.readonly:
             def do_send_keyboard(*parts):
@@ -126,6 +128,7 @@ class KeyboardClient(StubClientMixin):
                 # (maybe we could just choose one?)
                 kh.keyboard_sync = False
             caps["keyboard_sync"] = kh.sync
+            caps["catlink-clipboard-shortcut-tap"] = self.catlink_clipboard_shortcut_tap
         log("keyboard capabilities: %s", caps)
         return caps
 

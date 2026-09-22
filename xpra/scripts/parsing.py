@@ -1004,6 +1004,9 @@ def parse_command_line(cmdline: list[str], defaults: XpraConfig):
         "catlink-remote-clipboard-download": defaults.catlink_remote_clipboard_download,
         "catlink-client-uuid": defaults.catlink_client_uuid,
     }
+    parser.add_option("--catlink-clipboard-shortcut-tap", action="store",
+                      dest="catlink_clipboard_shortcut_tap", default=defaults.catlink_clipboard_shortcut_tap,
+                      help=optparse.SUPPRESS_HELP)
     gettext = getattr(optparse, "gettext", lambda x: x)
     parser.add_option("-V",
                       action="version",

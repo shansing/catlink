@@ -33,12 +33,16 @@ class KeyboardConnection(StubClientConnection):
     def init_state(self) -> None:
         self.keyboard_config = None
         self.ibus = False
+        self.catlink_clipboard_shortcut_tap = False
+        self.catlink_clipboard_shortcut_keys: dict[tuple[int, str], float] = {}
 
     def cleanup(self) -> None:
         self.keyboard_config = None
+        self.catlink_clipboard_shortcut_keys = {}
 
     def parse_client_caps(self, c: typedict) -> None:
         self.ibus = c.boolget("ibus")
+        self.catlink_clipboard_shortcut_tap = c.boolget("catlink-clipboard-shortcut-tap", False)
         ibuslog(f"client ibus support: {self.ibus}")
 
     def get_info(self) -> dict[str, Any]:

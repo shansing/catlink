@@ -23,6 +23,18 @@ log = Logger("keyboard")
 CATLINK_IM_CURSOR_ENHANCED_MODE = envbool("CATLINK_IM_CURSOR_ENHANCED_MODE", False)
 CATLINK_IM_SINGLE_KEY_MODIFIERS = frozenset(("lock", "mod2"))
 CATLINK_IM_ENTER_KEYNAMES = frozenset(("Return", "KP_Enter", "ISO_Enter"))
+CATLINK_CLIPBOARD_SHORTCUT_KEYS = frozenset(("c", "v", "x"))
+CATLINK_CLIPBOARD_SHORTCUT_IGNORED_MODIFIERS = frozenset(("lock", "mod2"))
+CATLINK_CLIPBOARD_SHORTCUT_STALE_SECONDS = 60
+
+
+def catlink_clipboard_shortcut_key(name: str, modifiers: list[str]) -> str:
+    key = name.lower()
+    active_modifiers = set(modifiers) - CATLINK_CLIPBOARD_SHORTCUT_IGNORED_MODIFIERS
+    if key in CATLINK_CLIPBOARD_SHORTCUT_KEYS and active_modifiers == {"control"}:
+        return key
+    return ""
+
 
 def catlink_im_synthetic_tap_kind(name: str, keystr: str) -> str:
     if name in CATLINK_IM_ENTER_KEYNAMES:
@@ -241,14 +253,45 @@ class KeyboardServer(StubServerMixin):
         if keycode >= 0:
             try:
                 is_mod = ss.is_modifier(keyname, keycode)
-                self._handle_key(wid, pressed, keyname, keyval, keycode, modifiers, is_mod,
-                                 ss.keyboard_config.sync, keystr, synthetic_keycode, synthetic_keyname)
+                if not self.catlink_handle_clipboard_shortcut(
+                        ss, wid, client_keycode, keyname, keyval, keycode, modifiers, is_mod, pressed, keystr):
+                    self._handle_key(wid, pressed, keyname, keyval, keycode, modifiers, is_mod,
+                                     ss.keyboard_config.sync, keystr, synthetic_keycode, synthetic_keyname)
             except Exception as e:
                 log("process_key_action%s", (proto, packet), exc_info=True)
                 log.error("Error: failed to %s key", ["unpress", "press"][pressed])
                 log.estr(e)
                 log.error(" for keyname=%s, keyval=%i, keycode=%i", keyname, keyval, keycode)
         ss.emit("user-event", "key-action")
+
+    def catlink_handle_clipboard_shortcut(self, ss, wid: int, client_keycode: int, name: str,
+                                          keyval: int, keycode: int, modifiers: list[str],
+                                          is_mod: bool, pressed: bool, keystr: str) -> bool:
+        if not ss.catlink_clipboard_shortcut_tap or is_mod:
+            return False
+        key_id = (client_keycode, name.lower())
+        pending = ss.catlink_clipboard_shortcut_keys
+        if not pressed:
+            if key_id in pending:
+                del pending[key_id]
+                return True
+            return False
+
+        shortcut = catlink_clipboard_shortcut_key(name, modifiers)
+        if not shortcut or keycode in self.keys_pressed or (wid and wid not in self._id_to_window):
+            pending.pop(key_id, None)
+            return False
+        now = monotonic()
+        # Recover from a lost release without keeping this shortcut disabled indefinitely.
+        if now - pending.get(key_id, float("-inf")) < CATLINK_CLIPBOARD_SHORTCUT_STALE_SECONDS:
+            log("ignoring repeated Catlink clipboard shortcut: key=%s client=%s", shortcut, ss.uuid)
+            return True
+
+        # Keep modifiers pressed, but do not hold the action key while its release packet is delayed.
+        self._handle_key(wid, True, name, keyval, keycode, modifiers, False, False, keystr)
+        pending[key_id] = now
+        log.info("Catlink clipboard shortcut tapped: key=Control+%s client=%s", shortcut.upper(), ss.uuid)
+        return True
 
     def get_keycode(self, ss, client_keycode: int, keyname: str,
                     pressed: bool, modifiers: list, keyval: int, keystr: str, group: int):
