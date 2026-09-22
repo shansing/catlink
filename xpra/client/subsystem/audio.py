@@ -4,7 +4,9 @@
 # later version. See the file COPYING for details.
 
 from typing import Any
+from collections import deque
 from collections.abc import Callable, Sequence, Iterable
+from threading import RLock
 
 from xpra.audio.common import AUDIO_DATA_PACKET, AUDIO_CONTROL_PACKET
 from xpra.platform.paths import get_icon_filename
@@ -13,11 +15,12 @@ from xpra.net.common import Packet
 from xpra.net.compression import Compressed
 from xpra.net.protocol.constants import CONNECTION_LOST
 from xpra.common import FULL_INFO, noop, SizedBuffer
-from xpra.os_util import get_machine_id, get_user_uuid, gi_import, OSX, POSIX
+from xpra.os_util import get_machine_id, get_user_uuid, gi_import, WIN32, OSX, POSIX
 from xpra.util.objects import typedict
 from xpra.util.str_fn import csv, bytestostr
 from xpra.util.env import envint
 from xpra.client.base.stub import StubClientMixin
+from xpra.util.thread import is_main_thread
 from xpra.log import Logger
 
 avsynclog = Logger("av-sync")
@@ -28,6 +31,12 @@ GLib = gi_import("GLib")
 AV_SYNC_DELTA = envint("XPRA_AV_SYNC_DELTA")
 DELTA_THRESHOLD = envint("XPRA_AV_SYNC_DELTA_THRESHOLD", 40)
 DEFAULT_AV_SYNC_DELAY = envint("XPRA_DEFAULT_AV_SYNC_DELAY", 150)
+DEVICE_RESTART_INITIAL_MS = 1000
+DEVICE_RESTART_MAX_MS = 30000
+DEVICE_RESTART_STABLE_MS = 15000
+DEVICE_RECOVERY_GENERIC_FAILURES = 3
+MAX_SPEAKER_START_PACKETS = 256
+MAX_SPEAKER_START_BYTES = 4 * 1024 * 1024
 
 
 def init_audio_tagging(tray_icon) -> None:
@@ -88,6 +97,23 @@ class AudioClient(StubClientMixin):
         self.audio_in_bytecount: int = 0
         self.audio_out_bytecount: int = 0
         self.audio_resume_restart = False
+        self._speaker_requested = False
+        self._audio_device_monitor = None
+        self._audio_monitor_stopped = False
+        self._audio_monitor_retry_timer = 0
+        self._audio_monitor_retry_delay = DEVICE_RESTART_INITIAL_MS
+        self._audio_start_idle = 0
+        self._audio_start_generation = 0
+        self._speaker_start_packets: deque[Packet] = deque()
+        self._speaker_start_bytes = 0
+        self._speaker_start_lock = RLock()
+        self._speaker_start_pending = False
+        self._audio_restart_timer = 0
+        self._audio_stable_timer = 0
+        self._audio_device_recovering = False
+        self._audio_generic_failures = 0
+        self._audio_restart_delay = DEVICE_RESTART_INITIAL_MS
+        self._audio_recovery_data = False
         self.server_av_sync: bool = False
         self.server_pulseaudio_id = ""
         self.server_pulseaudio_server = ""
@@ -178,7 +204,161 @@ class AudioClient(StubClientMixin):
         return {}
 
     def cleanup(self) -> None:
+        self._cancel_audio_start()
+        self._cancel_device_restart()
+        self._stop_device_monitor()
         self.stop_all_audio()
+
+    def _start_device_monitor(self) -> bool:
+        if (WIN32 or OSX) and self._speaker_requested:
+            if self._audio_device_monitor:
+                if not self._audio_monitor_stopped:
+                    return False
+                monitor = self._audio_device_monitor
+            else:
+                from xpra.audio.device_monitor import AudioDeviceMonitor
+                monitor = AudioDeviceMonitor()
+            if monitor.start(self._audio_device_changed):
+                self._audio_device_monitor = monitor
+                self._audio_monitor_stopped = False
+                self._cancel_monitor_retry()
+            else:
+                if monitor.monitor:
+                    self._audio_device_monitor = monitor
+                    self._audio_monitor_stopped = True
+                if not self._audio_monitor_retry_timer:
+                    delay = self._audio_monitor_retry_delay
+                    self._audio_monitor_retry_delay = min(delay * 2, DEVICE_RESTART_MAX_MS)
+                    self._audio_monitor_retry_timer = GLib.timeout_add(delay, self._retry_device_monitor)
+        return False
+
+    def _retry_device_monitor(self) -> bool:
+        self._audio_monitor_retry_timer = 0
+        if self._speaker_requested and self.exit_code is None:
+            self._start_device_monitor()
+        return False
+
+    def _cancel_monitor_retry(self) -> None:
+        if self._audio_monitor_retry_timer:
+            GLib.source_remove(self._audio_monitor_retry_timer)
+            self._audio_monitor_retry_timer = 0
+        self._audio_monitor_retry_delay = DEVICE_RESTART_INITIAL_MS
+
+    def _stop_device_monitor(self) -> None:
+        self._cancel_monitor_retry()
+        monitor = self._audio_device_monitor
+        if monitor:
+            if (WIN32 or OSX) and not is_main_thread():
+                GLib.idle_add(self._stop_device_monitor_on_main, monitor)
+            else:
+                self._stop_device_monitor_on_main(monitor)
+
+    def _stop_device_monitor_on_main(self, monitor) -> bool:
+        if monitor is not self._audio_device_monitor or self._speaker_requested:
+            return False
+        if monitor.stop():
+            self._audio_device_monitor = None
+            self._audio_monitor_stopped = False
+        else:
+            self._audio_monitor_stopped = True
+        return False
+
+    def _cancel_audio_start(self) -> None:
+        with self._speaker_start_lock:
+            self._speaker_requested = False
+            self._audio_start_generation += 1
+            self._speaker_start_packets.clear()
+            self._speaker_start_bytes = 0
+            self._speaker_start_pending = False
+            if self._audio_start_idle > 0:
+                GLib.source_remove(self._audio_start_idle)
+            self._audio_start_idle = 0
+
+    def _start_receiving_audio_on_main(self, generation: int) -> bool:
+        with self._speaker_start_lock:
+            if generation != self._audio_start_generation:
+                return False
+            self._audio_start_idle = 0
+            if self._speaker_requested and self.exit_code is None:
+                self.start_receiving_audio()
+        return False
+
+    def _cancel_device_restart(self) -> None:
+        if self._audio_restart_timer:
+            GLib.source_remove(self._audio_restart_timer)
+            self._audio_restart_timer = 0
+        if self._audio_stable_timer:
+            GLib.source_remove(self._audio_stable_timer)
+            self._audio_stable_timer = 0
+
+    def _audio_device_changed(self) -> None:
+        if not self._speaker_requested or self.exit_code is not None:
+            return
+        log.info("audio output device changed, restarting speaker")
+        self._audio_device_recovering = True
+        self._audio_generic_failures = 0
+        self._audio_restart_delay = DEVICE_RESTART_INITIAL_MS
+        self.stop_receiving_audio(device_change=True)
+        self._schedule_device_restart()
+
+    def _schedule_device_restart(self) -> None:
+        self._cancel_device_restart()
+        if not self._speaker_requested or self.exit_code is not None:
+            return
+        delay = self._audio_restart_delay
+        self._audio_restart_delay = min(delay * 2, DEVICE_RESTART_MAX_MS)
+        log.info("retrying speaker after output device change in %dms", delay)
+        self._audio_restart_timer = GLib.timeout_add(delay, self._restart_after_device_change)
+
+    def _retry_recovery_or_notify(self, error: str, device_error: bool = False) -> None:
+        if device_error:
+            self._audio_generic_failures = 0
+        else:
+            self._audio_generic_failures += 1
+            if self._audio_generic_failures >= DEVICE_RECOVERY_GENERIC_FAILURES:
+                log.warn("Warning: speaker recovery failed: %s", error)
+                self.may_notify_audio("Speaker forwarding error", error)
+                self._audio_device_recovering = False
+                self._cancel_device_restart()
+                # Retain the monitor so a later device change can start a new recovery.
+                return
+        self._schedule_device_restart()
+
+    def _restart_after_device_change(self) -> bool:
+        self._audio_restart_timer = 0
+        if not self._speaker_requested or self.exit_code is not None:
+            return False
+        if not self.server_audio_send or not get_matching_codecs(self.speaker_codecs, self.server_audio_encoders):
+            self.stop_receiving_audio()
+            return False
+        self._audio_recovery_data = False
+        self.start_receiving_audio()
+        if not self._audio_device_recovering:
+            return False
+        if not self.audio_sink or not self.speaker_enabled:
+            if not self._audio_restart_timer:
+                self._retry_recovery_or_notify("audio sink failed to start")
+        else:
+            self._audio_stable_timer = GLib.timeout_add(DEVICE_RESTART_STABLE_MS, self._finish_device_recovery)
+        return False
+
+    def _finish_device_recovery(self) -> bool:
+        self._audio_stable_timer = 0
+        if not self._audio_device_recovering or not self._speaker_requested:
+            return False
+        sink = self.audio_sink
+        state = sink.get_state() if sink and self.speaker_enabled else "stopped"
+        if state == "active":
+            self._audio_device_recovering = False
+            self._audio_generic_failures = 0
+            self._audio_restart_delay = DEVICE_RESTART_INITIAL_MS
+        elif state in ("paused", "ready") and not self._audio_recovery_data:
+            # The sink may await its first sample before transitioning to active.
+            self._audio_stable_timer = GLib.timeout_add(DEVICE_RESTART_STABLE_MS, self._finish_device_recovery)
+        else:
+            self.stop_receiving_audio(device_change=True)
+            self._retry_recovery_or_notify("audio sink did not become active")
+        return False
 
     def stop_all_audio(self) -> None:
         if self.audio_source:
@@ -261,8 +441,8 @@ class AudioClient(StubClientMixin):
         return True
 
     def suspend(self) -> None:
-        self.audio_resume_restart = bool(self.audio_sink)
-        if self.audio_sink:
+        self.audio_resume_restart = self._speaker_requested or bool(self.audio_sink)
+        if self.audio_resume_restart:
             self.stop_receiving_audio()
         if self.audio_source:
             self.stop_sending_audio()
@@ -410,8 +590,24 @@ class AudioClient(StubClientMixin):
 
     def start_receiving_audio(self) -> None:
         """ ask the server to start sending audio and emit the client signal """
+        if (WIN32 or OSX) and not is_main_thread():
+            with self._speaker_start_lock:
+                self._speaker_requested = True
+                if not self._audio_start_idle:
+                    # A callback may finish before idle_add returns its source ID.
+                    self._audio_start_idle = -1
+                    try:
+                        source_id = GLib.idle_add(
+                            self._start_receiving_audio_on_main, self._audio_start_generation)
+                    except Exception:
+                        self._audio_start_idle = 0
+                        raise
+                    if self._audio_start_idle == -1:
+                        self._audio_start_idle = source_id
+            return
         log("start_receiving_audio() audio sink=%s", self.audio_sink)
         enabled = False
+        recovering = self._audio_device_recovering
         try:
             if self.audio_sink is not None:
                 log("start_receiving_audio: we already have an audio sink")
@@ -430,6 +626,10 @@ class AudioClient(StubClientMixin):
                 return
             codec = matching_codecs[0]
 
+            self._speaker_requested = True
+            if WIN32 or OSX:
+                self._start_device_monitor()
+
             def sink_ready(*args) -> None:
                 scodec = codec
                 log("sink_ready(%s) codec=%s (server codec name=%s)", args, codec, scodec)
@@ -438,17 +638,33 @@ class AudioClient(StubClientMixin):
             self.on_sink_ready = sink_ready
             enabled = self.start_audio_sink(codec)
         finally:
+            if not enabled and not recovering and not self._audio_device_recovering:
+                self.stop_receiving_audio()
             if self.speaker_enabled != enabled:
                 self.speaker_enabled = enabled
                 self.emit("speaker-changed")
             log("start_receiving_audio() done, speaker_enabled=%s", enabled)
 
-    def stop_receiving_audio(self, tell_server: bool = True) -> None:
+    def stop_receiving_audio(self, tell_server: bool = True, *, device_change: bool = False,
+                             preserve_start_packets: bool = False) -> None:
         """
             ask the server to stop sending audio
             and toggle the flag so that we ignore further packets
             and emit the `new-sequence` client signal
         """
+        if not device_change:
+            if preserve_start_packets:
+                with self._speaker_start_lock:
+                    self._speaker_requested = False
+            else:
+                self._cancel_audio_start()
+            self._audio_device_recovering = False
+            self._audio_generic_failures = 0
+            self._audio_restart_delay = DEVICE_RESTART_INITIAL_MS
+            self._cancel_device_restart()
+            self._stop_device_monitor()
+        else:
+            self._cancel_device_restart()
         ss = self.audio_sink
         log("stop_receiving_audio(%s) audio sink=%s", tell_server, ss)
         if self.speaker_enabled:
@@ -493,6 +709,14 @@ class AudioClient(StubClientMixin):
             log("audio_sink_error(%s, %s) not the current sink, ignoring it", audio_sink, error)
             return
         estr = bytestostr(error).replace("gst-resource-error-quark: ", "")
+        recoverable = "AUDIO_DEVICE_CHANGED" in estr or (WIN32 and any(
+            s in estr.upper() for s in ("DEVICE_INVALIDATED", "88890004")))
+        if self._speaker_requested and (recoverable or self._audio_device_recovering):
+            log.info("audio output unavailable, waiting to restart speaker: %s", estr)
+            self._audio_device_recovering = True
+            self.stop_receiving_audio(device_change=True)
+            self._retry_recovery_or_notify(estr, recoverable)
+            return
         self.may_notify_audio("Speaker forwarding error", estr)
         log.warn("Error: stopping speaker:")
         log.warn(" %s", estr)
@@ -506,7 +730,10 @@ class AudioClient(StubClientMixin):
             log("audio_process_stopped(%s, %s) not the current sink, ignoring it", audio_sink, args)
             return
         log.warn("Warning: the audio process has stopped")
-        self.stop_receiving_audio()
+        recovering = self._audio_device_recovering and self._speaker_requested
+        self.stop_receiving_audio(device_change=recovering)
+        if recovering:
+            self._retry_recovery_or_notify("audio process stopped")
 
     def audio_sink_exit(self, audio_sink, *args) -> None:
         log("audio_sink_exit(%s, %s) audio_sink=%s", audio_sink, args, self.audio_sink)
@@ -522,7 +749,10 @@ class AudioClient(StubClientMixin):
             # we use the "codec" field as guard to ensure we only print this warning once…
             log.warn("Warning: the %s audio sink has stopped", ss.codec)
             ss.codec = ""
-        self.stop_receiving_audio()
+        recovering = self._audio_device_recovering and self._speaker_requested
+        self.stop_receiving_audio(device_change=recovering)
+        if recovering:
+            self._retry_recovery_or_notify("audio sink exited")
 
     def start_audio_sink(self, codec: str) -> bool:
         log("start_audio_sink(%s)", codec)
@@ -574,7 +804,67 @@ class AudioClient(StubClientMixin):
     ######################################################################
     # packet handlers
 
-    def _process_audio_data(self, packet: Packet) -> None:
+    @staticmethod
+    def _speaker_packet_size(packet: Packet) -> int:
+        size = len(packet[2])
+        if len(packet) > 4:
+            size += sum(len(part) for part in packet[4])
+        return size
+
+    def _queue_speaker_start_packet(self, packet: Packet) -> bool:
+        size = self._speaker_packet_size(packet)
+        queue = self._speaker_start_packets
+        # An oversized stream header cannot be queued safely; wait for a new header.
+        if size > MAX_SPEAKER_START_BYTES:
+            return False
+        while queue and (len(queue) >= MAX_SPEAKER_START_PACKETS or
+                         self._speaker_start_bytes + size > MAX_SPEAKER_START_BYTES):
+            # Retain stream boundaries so a queued EOS can be followed by a new SOS.
+            index = next((i for i, queued in enumerate(queue)
+                          if not typedict(queued.get_dict(3)).boolget("start-of-stream")
+                          and not typedict(queued.get_dict(3)).boolget("end-of-stream")), None)
+            if index is None:
+                return False
+            dropped = queue[index]
+            del queue[index]
+            self._speaker_start_bytes -= self._speaker_packet_size(dropped)
+        queue.append(packet)
+        self._speaker_start_bytes += size
+        return True
+
+    def _start_speaker_from_server(self, codec: str, generation: int | None) -> bool:
+        with self._speaker_start_lock:
+            if generation is not None and generation != self._audio_start_generation:
+                return False
+            if not self.speaker_allowed:
+                log.warn("Warning: cannot honour the request to start the speaker")
+                log.warn(" speaker forwarding is disabled")
+                self.stop_receiving_audio(True)
+                return False
+            self.speaker_enabled = True
+            self._speaker_requested = True
+            if WIN32 or OSX:
+                self._start_device_monitor()
+            self.emit("speaker-changed")
+            self.on_sink_ready = noop
+            log("starting speaker on server request using codec %s", codec)
+            recovering = self._audio_device_recovering
+            if self.start_audio_sink(codec):
+                return True
+            if not recovering and not self._audio_device_recovering:
+                self.stop_receiving_audio()
+            return False
+
+    def _process_audio_data(self, packet: Packet, start_generation: int | None = None) -> None:
+        if (WIN32 or OSX) and not is_main_thread():
+            with self._speaker_start_lock:
+                start = not self.speaker_enabled and typedict(packet.get_dict(3)).boolget("start-of-stream")
+                if self._speaker_start_pending or start:
+                    queued = self._queue_speaker_start_packet(packet)
+                    if queued and not self._speaker_start_pending:
+                        self._speaker_start_pending = True
+                        GLib.idle_add(self._drain_speaker_start_packets, self._audio_start_generation)
+                    return
         codec = packet.get_str(1)
         data = packet.get_buffer(2)
         metadata = typedict(packet.get_dict(3))
@@ -592,19 +882,8 @@ class AudioClient(StubClientMixin):
 
         if not self.speaker_enabled:
             if metadata.boolget("start-of-stream"):
-                # server is asking us to start playing audio
-                if not self.speaker_allowed:
-                    # no can do!
-                    log.warn("Warning: cannot honour the request to start the speaker")
-                    log.warn(" speaker forwarding is disabled")
-                    self.stop_receiving_audio(True)
+                if not self._start_speaker_from_server(metadata.strget("codec"), start_generation):
                     return
-                self.speaker_enabled = True
-                self.emit("speaker-changed")
-                self.on_sink_ready = noop
-                codec = metadata.strget("codec")
-                log("starting speaker on server request using codec %s", codec)
-                self.start_audio_sink(codec)
             else:
                 log("speaker is now disabled - dropping packet")
                 return
@@ -614,7 +893,7 @@ class AudioClient(StubClientMixin):
             return
         if metadata.boolget("end-of-stream"):
             log("server sent end-of-stream for sequence %s, closing audio pipeline", seq)
-            self.stop_receiving_audio(False)
+            self.stop_receiving_audio(False, preserve_start_packets=start_generation is not None)
             return
         if codec != ss.codec:
             log.error("Error: audio codec change is not supported!")
@@ -628,6 +907,8 @@ class AudioClient(StubClientMixin):
         # (some packets (ie: sos, eos) only contain metadata)
         if data or packet_metadata:
             ss.add_data(data, dict(metadata), packet_metadata)
+            if self._audio_device_recovering:
+                self._audio_recovery_data = True
         if self.av_sync and self.server_av_sync:
             qinfo = typedict(ss.get_info()).dictget("queue")
             queue_used = typedict(qinfo or {}).intget("cur", -1)
@@ -644,6 +925,19 @@ class AudioClient(StubClientMixin):
                 if self.av_sync_delta:
                     avsynclog(" adjusted value=%i with sync delta=%i", v, self.av_sync_delta)
                 self.send_audio_sync(v)
+
+    def _drain_speaker_start_packets(self, generation: int) -> bool:
+        while True:
+            with self._speaker_start_lock:
+                if generation != self._audio_start_generation:
+                    return False
+                if not self._speaker_start_packets:
+                    self._speaker_start_pending = False
+                    return False
+                packet = self._speaker_start_packets.popleft()
+                self._speaker_start_bytes -= self._speaker_packet_size(packet)
+            self._process_audio_data(packet, generation)
+        return False
 
     def init_authenticated_packet_handlers(self) -> None:
         log("init_authenticated_packet_handlers()")
