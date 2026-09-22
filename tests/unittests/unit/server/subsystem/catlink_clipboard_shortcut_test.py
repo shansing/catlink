@@ -42,7 +42,7 @@ class CatlinkClipboardShortcutTest(unittest.TestCase):
         self.assertEqual(len(self.events), 4)
 
     def test_stale_press_and_changed_modifiers(self):
-        with patch("xpra.server.subsystem.keyboard.monotonic", side_effect=(1, 7, 8)):
+        with patch("xpra.server.subsystem.keyboard.monotonic", side_effect=(1, 60, 61)):
             self.assertTrue(self.handle("c"))
             self.assertTrue(self.handle("c"))
             self.assertTrue(self.handle("c"))
