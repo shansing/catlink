@@ -19,7 +19,7 @@ from xpra.util.parsing import (
 from xpra.util.str_fn import csv
 from xpra.exit_codes import ExitCode, ExitValue
 from xpra.os_util import WIN32, OSX, POSIX, getuid, getgid, get_username_for_uid, is_arm
-from xpra.util.env import osexpand
+from xpra.util.env import osexpand, envbool
 from xpra.util.io import stderr_print, which
 from xpra.util.system import is_DEB, can_use_fakescreenfps
 
@@ -620,6 +620,7 @@ OPTION_TYPES: dict[str, Any] = {
     "catlink-im-enhanced-mode": bool,
     "catlink-disconnect-on-last-normal-window": bool,
     "catlink-remote-clipboard-download": bool,
+    "catlink-clipboard-shortcut-tap": bool,
     "clipboard"         : str,
     "clipboard-direction" : str,
     "clipboard-filter-file" : str,
@@ -867,6 +868,7 @@ CLIENT_OPTIONS: list[str] = [
     "catlink-im-preedit",
     "catlink-im-enhanced-mode",
     "catlink-disconnect-on-last-normal-window",
+    "catlink-clipboard-shortcut-tap",
     "clipboard", "clipboard-direction", "clipboard-filter-file",
     "remote-clipboard", "local-clipboard",
     "tcp-encryption", "tcp-encryption-keyfile", "encryption", "encryption-keyfile",
@@ -1087,6 +1089,7 @@ def get_defaults() -> dict[str, Any]:
         "catlink-im-enhanced-mode": False,
         "catlink-disconnect-on-last-normal-window": False,
         "catlink-remote-clipboard-download": True,
+        "catlink-clipboard-shortcut-tap": envbool("CATLINK_CLIPBOARD_SHORTCUT_TAP", False),
         "clipboard"         : "yes",
         "clipboard-direction" : "both",
         "clipboard-filter-file" : "",
