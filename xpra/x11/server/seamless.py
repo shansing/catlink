@@ -56,6 +56,7 @@ ALWAYS_RAISE_WINDOW = envbool("XPRA_ALWAYS_RAISE_WINDOW", False)
 PRE_MAP = envbool("XPRA_PRE_MAP_WINDOWS", True)
 DUMMY_DPI = envbool("XPRA_DUMMY_DPI", True)
 DUMMY_MONITORS = envbool("XPRA_DUMMY_MONITORS", True)
+CATLINK_RESTORE_ACTIVE_TRANSIENT_ON_UNMAP = envbool("CATLINK_RESTORE_ACTIVE_TRANSIENT_ON_UNMAP", False)
 
 WINDOW_SIGNALS = os.environ.get("XPRA_WINDOW_SIGNALS", "SIGINT,SIGTERM,SIGQUIT,SIGCONT,SIGUSR1,SIGUSR2").split(",")
 
@@ -735,13 +736,74 @@ class SeamlessServer(GObject.GObject, ServerBase):
         self.refresh_window(window)
 
     def _lost_window(self, window, wm_exiting=False) -> None:
+        refocus_parent = None
+        if CATLINK_RESTORE_ACTIVE_TRANSIENT_ON_UNMAP and not wm_exiting:
+            refocus_parent = self._catlink_restore_active_transient(window)
         wid = self._remove_window(window)
+        if refocus_parent is not None:
+            GLib.idle_add(self._catlink_refocus_transient, refocus_parent, window.xid)
         self.cancel_configure_damage(wid)
         if self._exit_with_windows and len(self._id_to_window) == 0:
             log.info("no more windows to manage, exiting")
             self.clean_quit()
         elif not wm_exiting:
             self.repaint_root_overlay()
+
+    def _catlink_restore_active_transient(self, window):
+        # Work around short-lived transients which become _NET_ACTIVE_WINDOW without
+        # taking X input focus. On teardown this split state can leave toolkit child
+        # widgets logically unfocused because the parent never saw FocusOut/FocusIn.
+        # Only repair the state when both X11 and our bookkeeping still agree that
+        # the transient parent owns focus; normal dialogs which took focus are ignored.
+        if window.is_OR() or window.is_tray():
+            return None
+        transient_for = window.get_property("transient-for")
+        if not transient_for:
+            return None
+        parent = self._id_to_window.get(transient_for)
+        if parent is None:
+            parent = next((w for w in self._id_to_window.values() if w.xid == transient_for), None)
+        if parent is None or parent is window or parent.is_OR() or parent.is_tray() or not parent.is_managed():
+            focuslog.info("[CATLINK-FOCUS] active-restore-skip lost=%#x transient=%#x parent=%s",
+                          window.xid, transient_for, parent)
+            return None
+        parent_wid = self._window_to_id.get(parent, 0)
+        from xpra.x11.xroot_props import root_get
+        with xsync:
+            actual, _revert_to = X11WindowBindings().XGetInputFocus()
+            active = root_get("_NET_ACTIVE_WINDOW", "u32")
+        if active != window.xid or actual != parent.xid or self._has_focus != parent_wid:
+            focuslog.info("[CATLINK-FOCUS] active-restore-skip lost=%#x parent=%#x "
+                          "actual=%#x active=%s remembered=%#x parent-wid=%#x",
+                          window.xid, parent.xid, actual, active, self._has_focus, parent_wid)
+            return None
+        focuslog.info("[CATLINK-FOCUS] active-restore lost=%#x parent=%#x actual-focus-unchanged",
+                      window.xid, parent.xid)
+        parent.set_active()
+        return parent
+
+    def _catlink_refocus_transient(self, parent, lost_xid: int) -> bool:
+        parent_wid = self._window_to_id.get(parent, 0)
+        if not self._wm or not parent_wid or parent_wid != self._has_focus or not parent.is_managed():
+            focuslog.info("[CATLINK-FOCUS] focus-bounce-skip lost=%#x parent=%s wid=%#x remembered=%#x",
+                          lost_xid, parent, parent_wid, self._has_focus)
+            return False
+        from xpra.x11.xroot_props import root_get
+        with xsync:
+            actual, _revert_to = X11WindowBindings().XGetInputFocus()
+            active = root_get("_NET_ACTIVE_WINDOW", "u32")
+        if actual != parent.xid or active != parent.xid:
+            focuslog.info("[CATLINK-FOCUS] focus-bounce-skip lost=%#x parent=%#x actual=%#x active=%s",
+                          lost_xid, parent.xid, actual, active)
+            return False
+        focuslog.info("[CATLINK-FOCUS] focus-bounce lost=%#x parent=%#x via-sink",
+                      lost_xid, parent.xid)
+        # Do not synthesize FocusIn: park focus on Xpra's InputOnly sink and
+        # return it immediately so the X server emits a genuine FocusOut/FocusIn.
+        with xlog:
+            self._wm.reset_x_focus()
+        parent.give_client_focus()
+        return False
 
     def _contents_changed(self, window, event) -> None:
         if window.is_OR() or window.is_tray() or window.get_property("shown"):
